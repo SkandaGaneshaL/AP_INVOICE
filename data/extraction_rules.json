@@ -1,0 +1,333 @@
+[
+  {
+    "ID": 13,
+    "FIELD_KEY": "PaymentTerms",
+    "DISPLAY_LABEL": "Payment Terms",
+    "SHORT_RULE": "extract only when explicitly present",
+    "DETAILED_RULE": [
+      "Extract payment terms exactly as written only when explicitly shown in a clearly labeled field such as Terms, Payment Terms, Payment Term, Credit Terms, Due Terms, or equivalent. Valid values may include Net 30, Immediate, Due on Receipt, Cash, Credit, or similar terms. If the field is present and contains a value, return that value exactly as shown. If the field is missing or present but blank, empty, null, or unreadable, return `\"PaymentTerms\": null`. Do not infer or calculate terms from invoice dates, due dates, notes, payment instructions, or payment methods such as ACH or bank transfer."
+    ]
+  },
+  {
+    "ID": 14,
+    "FIELD_KEY": "PONumber",
+    "DISPLAY_LABEL": "PO Number",
+    "SHORT_RULE": "only from an explicitly labeled PO field",
+    "DETAILED_RULE": [
+      "Extract a purchase order number only when it appears in a dedicated field or column explicitly labeled PO, P.O., PO Number, Purchase Order, or an equivalent PO column.",
+      "If the labeled PO field is empty, return null.",
+      "Do not extract any value from headers, invoice references, bill references, VAT references, notes, remarks, descriptions, or any free-text area.",
+      "Never extract an \"Order no\", \"Order number\", or \"Our Order No\" as the PO number.",
+      "Do not extract any values that contain PO- in any position, for example PO-011825 or RX-PO-2198.",
+      "If the document contains both a blank PO field and a PO-like string elsewhere, return null.",
+      "Never use regex fallback for PONumber when the labeled field is empty.",
+      "Decision order: find the labeled PO field, read only that field, return null if empty, otherwise use only that field value, and never override with Order no or PO-like values from elsewhere."
+    ]
+  },
+  {
+    "ID": 15,
+    "FIELD_KEY": "BuyerNameOriginal",
+    "DISPLAY_LABEL": "Bill To",
+    "SHORT_RULE": "buyer/client name in original language",
+    "DETAILED_RULE": [
+      "Extract the buyer/client name from a section labeled Buyer, Bill To, Buyer/Bill To, Customer, or an equivalent buyer/client field.",
+      "Always prioritize the buyer/client section, not the seller section.",
+      "Extract the main legal entity name only.",
+      "Ignore contact names, departments, addresses, emails, VAT numbers, and CR numbers.",
+      "If both Arabic and English are present, BuyerNameOriginal is the Arabic/original name.",
+      "If only English is present, BuyerNameOriginal is the English name.",
+      "If only Arabic is present, BuyerNameOriginal is the Arabic name.",
+      "If multiple names appear, choose the company/legal entity name, not a brand, department, or person name.",
+      "Do not concatenate multiple lines.",
+      "Do not use seller name for buyer/client extraction."
+    ]
+  },
+  {
+    "ID": 16,
+    "FIELD_KEY": "BuyerNameEnglish",
+    "DISPLAY_LABEL": "Bill To (EN)",
+    "SHORT_RULE": "buyer/client name in English",
+    "DETAILED_RULE": [
+      "Extract the buyer/client name from a section labeled Buyer, Bill To, Buyer/Bill To, Customer, or an equivalent buyer/client field.",
+      "Always prioritize the buyer/client section, not the seller section.",
+      "Extract the main legal entity name only.",
+      "If both Arabic and English are present, BuyerNameEnglish is the English name.",
+      "If only English is present, BuyerNameEnglish is the English name.",
+      "If only Arabic is present, translate the Arabic buyer/client name to English.",
+      "If multiple names appear, choose the company/legal entity name, not a brand, department, or person name.",
+      "Do not concatenate multiple lines.",
+      "Do not use seller name for buyer/client extraction."
+    ]
+  },
+  {
+    "ID": 41,
+    "FIELD_KEY": "ShippedBy",
+    "DISPLAY_LABEL": "Shipped By",
+    "SHORT_RULE": "\"Shipped by\" from the Invoice",
+    "DETAILED_RULE": [
+      "\"Shipped by\" can be mentioned as courier service, courier, shipping service, etc. related to courier/shipping."
+    ]
+  },
+  {
+    "ID": 42,
+    "FIELD_KEY": "VendorAddress",
+    "DISPLAY_LABEL": "Supplier Address",
+    "SHORT_RULE": "supplier/vendor address",
+    "DETAILED_RULE": [
+      "Extract the supplier/vendor address exactly as shown on the invoice. Use the address belonging to the seller, vendor, or supplier. Do not use buyer, bill-to, or ship-to address."
+    ]
+  },
+  {
+    "ID": 45,
+    "FIELD_KEY": "InvoiceNetAmount",
+    "DISPLAY_LABEL": "Invoice Net Amount",
+    "SHORT_RULE": "explicitly labeled invoice net amount only",
+    "DETAILED_RULE": [
+      "InvoiceNetAmount: Extract only an invoice-level value explicitly labeled Net Amount, Net Invoice Amount, Amount Before Tax, Taxable Amount, or invoice-level Subtotal. A numeric value is invalid unless one of these labels is explicitly present.  Do not use totals, gross amounts, shipment/recipient/shipper subtotals, or line-item totals. Do not infer or calculate, and do not assume net = gross when tax is absent. Never calculate InvoiceNetAmount by subtracting surcharges, fees, TaxAmount, or any other amount from InvoiceGrossAmount. A missing or zero TaxAmount does not make the invoice total a Net Amount. NEVER COPY InvoiceGrossAmount, Total Charges, or Invoice Total into InvoiceNetAmount.  If no valid label/value exists, return \"InvoiceNetAmount\": \"Not present\"; if the label exists but value is blank/unreadable, return \"InvoiceNetAmount\": \"null\"."
+    ]
+  },
+  {
+    "ID": 46,
+    "FIELD_KEY": "TaxAmount",
+    "DISPLAY_LABEL": "Tax/VAT Amount",
+    "SHORT_RULE": "explicitly labeled invoice tax amount only",
+    "DETAILED_RULE": [
+      "TaxAmount: Extract only an invoice-level value explicitly labeled Tax, Tax Amount, VAT, VAT Amount, GST, Sales Tax, or Total Tax. Do not infer, calculate, or use surcharges, fees, discounts, tax rates alone, line items, or gross/net differences. Fuel Surcharge is a charge, not tax, even when expressed as a percentage. Never sum Fuel Surcharge amounts into TaxAmount.  If no valid label/value exists, return \"TaxAmount\": \"Not present\"; if the label exists but value is blank/unreadable, return \"TaxAmount\": \"null\".  Never derive Net from Tax/Gross or Tax from Net/Gross."
+    ]
+  },
+  {
+    "ID": 47,
+    "FIELD_KEY": "LineItemDescription",
+    "DISPLAY_LABEL": "Line Item Description",
+    "SHORT_RULE": "invoice line item description",
+    "DETAILED_RULE": [
+      "Extract the invoice line item or item description exactly as written. Use product/service description columns, item description fields, service description fields, or equivalent. If multiple line items are present, return all item descriptions in invoice order. Do not use invoice notes, payment terms, tax descriptions, or supplier address text as line item descriptions."
+    ]
+  },
+  {
+    "ID": 50,
+    "FIELD_KEY": "InvoicingCountry",
+    "DISPLAY_LABEL": "Invoicing Country",
+    "SHORT_RULE": "invoice country",
+    "DETAILED_RULE": [
+      "Extract the invoicing country from the invoice. Prefer the country shown in the supplier/vendor address, seller tax registration section, or issuing entity address. Do not infer the country from currency alone. If multiple countries are present, choose the country associated with the supplier/vendor issuing the invoice."
+    ]
+  },
+  {
+    "ID": 52,
+    "FIELD_KEY": "BankAccountNumber",
+    "DISPLAY_LABEL": "Bank Account Number",
+    "SHORT_RULE": "bank account number",
+    "DETAILED_RULE": [
+      "Extract the bank account number exactly as shown on the invoice. Use fields labeled Account Number, Bank Account, Beneficiary Account, Account No., IBAN Account, or equivalent. Preserve spacing and formatting when possible. Do not use invoice number, supplier number, tax number, routing number, SWIFT, IBAN, or ABA as the bank account number unless it is explicitly labeled as the account number."
+    ]
+  },
+  {
+    "ID": 56,
+    "FIELD_KEY": "InvoiceGrossAmount",
+    "DISPLAY_LABEL": "Invoice Gross Amount",
+    "SHORT_RULE": "total invoice amount including tax",
+    "DETAILED_RULE": [
+      "Extract the final gross invoice amount including tax, VAT, fees, and charges. Use fields labeled Gross Amount, Total Amount, Invoice Total, Grand Total, Amount Due, Total Due, Balance Due, or Amount Payable. Do not use net amount, subtotal, taxable amount, or tax amount alone. Return the final payable amount when multiple totals are present."
+    ]
+  },
+  {
+    "ID": 17,
+    "FIELD_KEY": "DeliveryOrderNumber",
+    "DISPLAY_LABEL": "Delivery Order No.",
+    "SHORT_RULE": "delivery order number only when explicitly present",
+    "DETAILED_RULE": [
+      "Extract the delivery order number only when explicitly present.",
+      "Use fields labeled Delivery Order, Delivery Order Number, DO Number, Delivery Note, or equivalent.",
+      "Do not infer from PO number, invoice number, shipment text, or line descriptions.",
+      "If no explicit delivery order value is present, return null."
+    ]
+  },
+  {
+    "ID": 18,
+    "FIELD_KEY": "CustomerName",
+    "DISPLAY_LABEL": "Customer Name",
+    "SHORT_RULE": "customer/buyer name when explicitly present",
+    "DETAILED_RULE": [
+      "Extract the customer name only from an explicitly labeled Customer, Buyer, Bill To, Buyer/Bill To, or equivalent buyer/client section.",
+      "Prefer the buyer/customer legal entity name.",
+      "Do not use seller/vendor name as CustomerName.",
+      "Ignore contact names, departments, addresses, emails, VAT numbers, and registration numbers.",
+      "If the customer name is not explicitly present, return null."
+    ]
+  },
+  {
+    "ID": 43,
+    "FIELD_KEY": "BillToAddress",
+    "DISPLAY_LABEL": "Bill To Address",
+    "SHORT_RULE": "Bill-to address including entity name",
+    "DETAILED_RULE": [
+      "Extract the full bill-to address, including the bill-to entity name when present. Use sections labeled Bill To, Buyer, Customer, Sold To, Invoice To, Billing Address, or equivalent. Do not use supplier/vendor address or ship-to/delivery address as the bill-to address. Preserve address lines in the same order as shown on the invoice. If no bill-to field, label, or section is present anywhere on the invoice, return the field label \"BillToAddress\" with the value \"Not present\". If a bill-to field, label, or section is present but its value is empty, blank, null, or unreadable, return the field label \"BillToAddress\" with the value \"null\"."
+    ]
+  },
+  {
+    "ID": 44,
+    "FIELD_KEY": "ShipToAddress",
+    "DISPLAY_LABEL": "Ship To Address",
+    "SHORT_RULE": "ship-to address including entity name. Address of the entity which is receiving the invoice \"To\" address.",
+    "DETAILED_RULE": [
+      "Extract the full ship-to/delivery address, including the ship-to entity name, from sections such as Ship To, Deliver To, To, Delivery Address, Consignee, Recipient, Destination, or equivalent. Exclude supplier/vendor and bill-to addresses, and preserve address lines in the same order as shown on the invoice. If no ship-to section exists, return `\"ShipToAddress\": \"Not present\"`. If it exists but is blank, null, or unreadable, return `\"ShipToAddress\": \"null\"`. If a complete ship-to address is not available, then extract only the clearly labeled shipping/delivery recipient name (if explicitly shown in a shipping context), ensuring it is tied to delivery/consignee/destination information; do not use or infer buyer, customer, bill-to, or supplier names under any circumstance."
+    ]
+  },
+  {
+    "ID": 49,
+    "FIELD_KEY": "ProjectProtocolNumber",
+    "DISPLAY_LABEL": "Project/Protocol Number",
+    "SHORT_RULE": "project or protocol number",
+    "DETAILED_RULE": [
+      "Extract the project/protocol identifier exactly as shown from fields such as Project Number/ID, Protocol Number/ID, Study/Trial Number, Grant Number, Contract Number, Project, Protocol, Study, Trial, or equivalent. Exclude PO, invoice, supplier, customer, account, tax, bank/payment reference, delivery order, and line-item numbers. If no relevant field exists, return `\"ProjectProtocolNumber\": \"Not present\"`. If it exists but is blank, null, or unreadable, return `\"ProjectProtocolNumber\": \"No value\"`. Return the value exactly as shown on the invoice when present."
+    ]
+  },
+  {
+    "ID": 51,
+    "FIELD_KEY": "PaymentMethod",
+    "DISPLAY_LABEL": "Payment Method",
+    "SHORT_RULE": "payment method. eg. bank transfer, direct transfer, cash, etc.",
+    "DETAILED_RULE": [
+      "Extract the payment method from explicit payment instructions or labeled payment fields. Use standardized values such as Bank Transfer, Wire Transfer, Check/Cheque, Credit Card, Cash, ACH, SEPA, or Direct Debit. Explicit instructions override inference/defaults (“make check payable” / “pay by cheque” → Check/Cheque; “pay by ACH” → ACH; “pay by credit card” → Credit Card). Bank details (IBAN, SWIFT/BIC, ABA/routing, bank account, beneficiary, wire instructions) imply Bank Transfer only if no explicit payment method contradicts them. If no explicit method exists but bank details are present, return Bank Transfer; otherwise default to Bank Transfer. Never return null, blank, dash, hyphen, or Not present."
+    ]
+  },
+  {
+    "ID": 53,
+    "FIELD_KEY": "BankName",
+    "DISPLAY_LABEL": "Bank Name",
+    "SHORT_RULE": "bank name",
+    "DETAILED_RULE": [
+      "Extract the bank name exactly as shown on the invoice. Use fields labeled Bank Name, Beneficiary Bank, Receiving Bank, Banker, Remittance Bank, or equivalent. Do not use supplier name, payee name, branch address, account holder name, or SWIFT/BIC code as the bank name."
+    ]
+  },
+  {
+    "ID": 54,
+    "FIELD_KEY": "BankIdentifier",
+    "DISPLAY_LABEL": "SWIFT/IBAN/ABA Number",
+    "SHORT_RULE": "bank identifier",
+    "DETAILED_RULE": [
+      "Extract bank identifiers exactly as shown from fields such as SWIFT, BIC, SWIFT/BIC, IBAN, ABA, Routing Number, Sort Code, IFSC, Branch Code, Bank Identifier, Bank Code, or equivalent. Preserve labels when multiple identifiers exist. Exclude bank account number, invoice number , supplier tax number, PO number, project/protoco number, payment reference, and supplier numbers. If no bank identifier field or label exists, return `\"BankIdentifier\": \"Not present\"`. If it exists but is blank, null, or unreadable, return `\"BankIdentifier\": \"No value\"`. Return the value exactly as shown on the invoice when present."
+    ]
+  },
+  {
+    "ID": 55,
+    "FIELD_KEY": "PayeeName",
+    "DISPLAY_LABEL": "Payee Name",
+    "SHORT_RULE": "payee or beneficiary name",
+    "DETAILED_RULE": [
+      "Extract Payee Name from explicit labels like Payee, Beneficiary, Account Name, Remit To, or Payable To.",
+      "If none exists and there is only one clear supplier with no conflicting remit entity, use the supplier name as Payee Name."
+    ]
+  },
+  {
+    "ID": 48,
+    "FIELD_KEY": "QuantityBilled",
+    "DISPLAY_LABEL": "Quantity Billed",
+    "SHORT_RULE": "billed quantity",
+    "DETAILED_RULE": [
+      "Extract the quantity billed for each invoice line item. Use fields labeled Quantity, Qty, Qty Billed, Units, Hours, Days, No. of Items, 数量, or equivalent. If multiple line items are present, return quantities in the same order as the corresponding line item descriptions.",
+      "Do not use unit price, line amount, tax amount, total amount, invoice amount, net amount, or gross amount as quantity.",
+      "If no quantity billed field or label is present anywhere on the invoice, return the field label \"QuantityBilled\" with the value \"Not present\".",
+      "If a quantity billed field or label is present but its value is empty, blank, null, or unreadable, return the field label \"QuantityBilled\" with the value \"No value\"."
+    ]
+  },
+  {
+    "ID": 5,
+    "FIELD_KEY": "InvoiceDate",
+    "DISPLAY_LABEL": "Invoice Date",
+    "SHORT_RULE": "format strictly DD/MM/YYYY",
+    "DETAILED_RULE": [
+      "Extract the invoice issue date from Invoice Date, Issue Date, Bill Date, Tax Invoice Date, or equivalent. Exclude due, delivery, payment, posting, order, and receipt dates. Return DD/MM/YYYY. If absent, return \"Not present\"; if present but blank or unreadable, return \"null\"."
+    ]
+  },
+  {
+    "ID": 6,
+    "FIELD_KEY": "InvoiceNumber",
+    "DISPLAY_LABEL": "Invoice Number",
+    "SHORT_RULE": "invoice reference",
+    "DETAILED_RULE": [
+      "Extract the invoice number/reference exactly as written from fields such as Invoice Number, Invoice No., Invoice ID, Tax Invoice Number, Bill Number, or equivalent. Exclude PO numbers, payment references, tax/VAT IDs, supplier account numbers, and bank references. If no invoice number field exists, return `\"InvoiceNumber\": \"Not present\"`. If the field exists but the value is blank, null, or unreadable, return `\"InvoiceNumber\": \"null\"`."
+    ]
+  },
+  {
+    "ID": 7,
+    "FIELD_KEY": "InvoiceAmount",
+    "DISPLAY_LABEL": "Total Amount",
+    "SHORT_RULE": "total payable amount",
+    "DETAILED_RULE": [
+      "Extract the total payable invoice amount.",
+      "Use the final amount due or grand total payable by the buyer.",
+      "Do not use subtotal, tax-only amount, paid amount, balance reference, or line amount as InvoiceAmount."
+    ]
+  },
+  {
+    "ID": 8,
+    "FIELD_KEY": "InvoiceLanguage",
+    "DISPLAY_LABEL": "Language",
+    "SHORT_RULE": "primary language",
+    "DETAILED_RULE": [
+      "Extract the primary language of the invoice.",
+      "If the invoice contains Arabic and English, return the dominant invoice language or bilingual when both are materially present."
+    ]
+  },
+  {
+    "ID": 9,
+    "FIELD_KEY": "InvoiceCurrency",
+    "DISPLAY_LABEL": "Currency",
+    "SHORT_RULE": "currency of invoice",
+    "DETAILED_RULE": [
+      "Extract the invoice currency from the invoice total, currency code, or currency symbol.",
+      "Prefer ISO currency code when clearly available.",
+      "Do not infer currency from supplier country alone."
+    ]
+  },
+  {
+    "ID": 10,
+    "FIELD_KEY": "VendorName",
+    "DISPLAY_LABEL": "Supplier Name",
+    "SHORT_RULE": "vendor/seller/supplier name exactly as written",
+    "DETAILED_RULE": [
+      "Extract the seller/vendor/supplier legal entity name exactly as written in the invoice.",
+      "VendorName must capture the original script from the invoice.",
+      "If Arabic text is present for the vendor name, use Arabic text in VendorName and do not replace it with English.",
+      "If both Arabic and English are present, VendorName is the Arabic/original text.",
+      "Only use English in VendorName if no Arabic/original-script vendor name exists.",
+      "Ignore contact names, departments, addresses, emails, VAT numbers, and registration numbers."
+    ]
+  },
+  {
+    "ID": 11,
+    "FIELD_KEY": "VendorNameEnglish",
+    "DISPLAY_LABEL": "Vendor Name (EN)",
+    "SHORT_RULE": "vendor/seller name in English",
+    "DETAILED_RULE": [
+      "Extract the seller/vendor legal entity name in English.",
+      "If the vendor name is already English, copy it exactly.",
+      "If the vendor name is Arabic or another non-English language, translate it to English.",
+      "If both Arabic and English are present, use the English vendor name in VendorNameEnglish.",
+      "If the vendor name is truncated, complete it only when obvious."
+    ]
+  },
+  {
+    "ID": 12,
+    "FIELD_KEY": "InvoiceType",
+    "DISPLAY_LABEL": "Invoice Type",
+    "SHORT_RULE": "Credit Memo / Debit Memo / Standard, default Standard",
+    "DETAILED_RULE": [
+      "Extract invoice type as Credit Memo, Debit Memo, or Standard.",
+      "If the document clearly says credit memo, return Credit Memo.",
+      "If the document clearly says debit memo, return Debit Memo.",
+      "If no credit/debit memo indicator is present, return Standard."
+    ]
+  },
+  {
+    "ID": 221,
+    "FIELD_KEY": "GSTNumber",
+    "DISPLAY_LABEL": "GST Number",
+    "SHORT_RULE": "GST Number to be extracted",
+    "DETAILED_RULE": [
+      "GST Number to be extracted"
+    ]
+  }
+]
