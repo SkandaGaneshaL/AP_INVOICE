@@ -42,20 +42,31 @@ class RulePromptBuilder:
 
     @classmethod
     def normal_payload(cls, context: RuleGenerationContext) -> dict:
+        packet = context.feedback_packet
+        evidence = []
+        competing = []
+        history = []
+        if packet:
+            evidence = [item.model_dump(exclude={"raw_value", "normalized_value"}) for item in packet.evidence[:3]]
+            competing = [item.model_dump(exclude={"raw_value", "normalized_value"}) for item in packet.competing_evidence[:2]]
+            history = [item.model_dump() if hasattr(item, "model_dump") else item for item in packet.historical_examples[:2]]
+        # Keep the provider context field-local. The full invoice and both
+        # complete JSON documents are intentionally not sent to sentence
+        # generation.
         return {
             "field_key": context.field_key,
             "display_label": context.display_label,
-            "short_rule": context.short_rule,
-            "existing_rules": context.detailed_rule,
+            "existing_rule": context.short_rule,
+            "detailed_rules": context.detailed_rule[:3],
             "field_path": context.field_path,
-            "previous_value": context.old_value,
-            "corrected_value": context.new_value,
-            "feedback": cls.feedback(context),
-            "invoice_payload": context.invoice_payload,
-            "corrected_response": context.final_response,
-            "feedback_packet": context.feedback_packet.model_dump() if context.feedback_packet else None,
+            "correction": {"old": context.old_value, "new": context.new_value,
+                           "edit_script": "structured_value_change"},
+            "evidence_hits": evidence,
+            "competing_hits": competing,
+            "historical_examples": history,
             "normalization_mode": context.normalization_mode,
-            "instruction_precedence": "The current user correction controls this candidate; do not apply conflicting older rules.",
+            "constraints": ["Do not hard-code the corrected value.",
+                            "Return reusable extraction behavior only."],
         }
 
     @classmethod

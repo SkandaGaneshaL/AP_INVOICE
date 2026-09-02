@@ -2,6 +2,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .model_registry import ReasoningEffort, SentenceGenerationModel
+from .operators import FieldProgram
 
 
 class RuleRecord(BaseModel):
@@ -10,6 +11,7 @@ class RuleRecord(BaseModel):
     DISPLAY_LABEL: str = ""
     SHORT_RULE: str = ""
     DETAILED_RULE: list[str] = Field(default_factory=list)
+    PROGRAM: dict[str, Any] | None = None
 
 
 class UpdateRequest(BaseModel):
@@ -157,6 +159,7 @@ class RuleGenerationContext(BaseModel):
     baseline_evaluation: Any = None
     normalization_mode: str = "none"
     reasoning_effort: ReasoningEffort = "low"
+    current_program: FieldProgram | None = None
 
 
 class EvaluationResult(BaseModel):

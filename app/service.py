@@ -11,6 +11,12 @@ from .normalization import infer_policy
 from .normal_strategy import GeneratedRuleCandidate, GenerativeRuleGenerator
 from .usage import summarize_usage
 from .model_output import ModelOutputError
+from .operators import FieldProgram, SelectOp, TransformOp
+from .transform_induction import induce_transforms, induce_transform_candidates
+from .type_inference import infer_type
+from .rule_compiler import compile_program, compile_rule_update
+from .operators import CorrectionExample, CompetingHit
+from .type_inference import infer_field_type
 
 
 class RuleGenerationError(RuntimeError):
@@ -77,8 +83,41 @@ class UpdateRulesService:
             feedback_packet=packet,
             baseline_instruction=self.baseline_instructions.get(rule.FIELD_KEY),
             normalization_mode=infer_policy(rule.FIELD_KEY, change.old_value, change.new_value).mode,
-            reasoning_effort=request.reasoning_effort)
+            reasoning_effort=request.reasoning_effort, current_program=(
+                FieldProgram.model_validate(rule.PROGRAM) if rule.PROGRAM else None
+            ))
         return context
+
+    @staticmethod
+    def _deterministic_candidate(context: RuleGenerationContext):
+        """Return a candidate when the typed correction has one supported transform."""
+        packet = context.feedback_packet
+        if not packet or not packet.evidence:
+            return None
+        inferred = infer_field_type(context.field_key, context.display_label, context.old_value, context.new_value,
+                                    packet.evidence[0].snippet if packet.evidence else "")
+        ranked = induce_transform_candidates(inferred, context.old_value, context.new_value,
+                                             [item for item in packet.evidence],
+                                             [CompetingHit.model_validate(item.model_dump()) for item in packet.competing_evidence],
+                                             [item.model_dump() for item in packet.historical_examples])
+        if not ranked or ranked[0].program.transform[0].op == "identity":
+            return None
+        correction = CorrectionExample(field_key=context.field_key, field_type=str(inferred.value),
+                                       old_value=context.old_value, new_value=context.new_value,
+                                       failure_type=packet.failure_type,
+                                       label_text=packet.evidence[0].label or "" if packet.evidence else "")
+        compiled_result = compile_rule_update(context.current_program, correction, ranked, None)
+        program = compiled_result.program
+        program.select = SelectOp(label_aliases=[packet.evidence[0].label] if packet.evidence[0].label else [])
+        compiled = compile_program(program)
+        from .normal_strategy import GeneratedRuleCandidate
+        return GeneratedRuleCandidate(
+            sentence=compiled.sentence, strategy="generative", response_format="compiled_program",
+            metadata={"model": None, "reason": ranked[0].rationale,
+                      "decision_summary": ranked[0].rationale, "program": program.model_dump(),
+                      "candidate_status": "accepted_with_transformation",
+                      "transformation": program.transform[0].op},
+        )
 
     def _run_strategy(self, generator, strategy, request, rules, changes, *, tolerate_failure=False):
         working = [r.model_copy(deep=True) for r in rules]
@@ -93,13 +132,13 @@ class UpdateRulesService:
                 continue
             try:
                 context = self._context(request, rule, change)
-                candidate = self._candidate(generator, context)
+                candidate = self._deterministic_candidate(context) or self._candidate(generator, context)
                 if not candidate.sentence:
                     raise ValueError("strategy produced an empty rule sentence")
                 if self.evaluator and context.document_bytes:
                     candidate.evaluation, _ = self.evaluator.evaluate(context, candidate.sentence)
                 rejected = bool(candidate.evaluation and candidate.evaluation.candidate_status == "rejected")
-                added = False if rejected else append_rule(rule, candidate.sentence)
+                added = False if rejected else append_rule(rule, candidate.sentence, candidate.metadata.get("program"))
                 result = ChangeResult(ID=rule.ID, FIELD_KEY=rule.FIELD_KEY, path=change.path,
                     old_value=change.old_value, new_value=change.new_value,
                     status="rejected" if rejected else "preview", generated_sentence=candidate.sentence,

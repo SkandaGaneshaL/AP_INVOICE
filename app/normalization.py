@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
+from .transform_induction import induce_transforms
+from .type_inference import infer_type, InferredType
 
 
 @dataclass(frozen=True)
@@ -12,24 +14,26 @@ class NormalizationPolicy:
 
 
 def infer_policy(field_key: str, old_value: Any, new_value: Any) -> NormalizationPolicy:
-    """Infer only the transformation explicitly represented by the correction."""
-    if field_key.casefold() != "invoicenumber":
-        return NormalizationPolicy(field_key)
-    old = str(old_value or "").strip()
-    new = str(new_value or "").strip()
-    if re.fullmatch(r"[A-Za-z]+\d+", old) and re.fullmatch(r"\d+", new):
-        if old[len(old) - len(new):] == new:
-            return NormalizationPolicy(field_key, "remove_prefix")
-    if re.fullmatch(r"\d+", old) and re.fullmatch(r"[A-Za-z]+\d+", new):
-        if new[len(new) - len(old):] == old:
-            return NormalizationPolicy(field_key, "preserve_prefix")
+    """Infer a generic policy from the typed edit, never from a field name."""
+    inferred = infer_type(old_value, new_value, field_key)
+    candidates = induce_transforms(old_value, new_value, inferred)
+    if candidates:
+        op = candidates[0].program.transform[0].op
+        if op == "strip_leading_alpha_token":
+            return NormalizationPolicy(field_key, "strip_leading_alpha_token")
+        if op == "parse_date":
+            return NormalizationPolicy(field_key, "parse_date")
+        if op == "parse_money":
+            return NormalizationPolicy(field_key, "parse_money")
     return NormalizationPolicy(field_key)
 
 
 def apply_policy(field_key: str, value: Any, mode: str) -> Any:
-    if field_key.casefold() != "invoicenumber" or not isinstance(value, str):
+    if not isinstance(value, str):
         return value
     value = value.strip()
-    if mode == "remove_prefix" and re.fullmatch(r"[A-Za-z]+\d+", value):
-        return re.sub(r"^[A-Za-z]+(?=\d+$)", "", value)
+    if mode in {"remove_prefix", "strip_leading_alpha_token"} and re.search(r"\d+$", value):
+        return re.sub(r"^[A-Za-z][A-Za-z0-9 _-]*?(?=\d+$)", "", value).strip()
+    if mode == "parse_money":
+        return re.sub(r"[, ]", "", value)
     return value

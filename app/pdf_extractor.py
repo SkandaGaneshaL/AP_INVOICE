@@ -10,6 +10,7 @@ from .extraction_prompt import InvoiceExtractionPromptBuilder
 from .oci_pdf_client import OciPdfClient
 from .models import TokenUsage, UsageSummary
 from .usage import summarize_usage
+from .schema_contract import normalize_field
 
 
 class PdfExtractionError(ValueError):
@@ -80,16 +81,34 @@ class OciPdfExtractor:
             if self.prompt_builder.is_list_rule(rule) and isinstance(raw, list):
                 normalized_items: list[dict[str, Any]] = []
                 for item in raw:
-                    if not isinstance(item, dict) or set(item) != {"value", "Page"}:
+                    if not isinstance(item, dict):
                         invalid.append(field)
                         continue
-                    normalized_items.append({"value": item["value"], "Page": self._page(item["Page"], field)})
+                    if {"value", "Page"}.issubset(item):
+                        scalar_item = normalize_field(item)
+                        scalar_item["Page"] = self._page(scalar_item["Page"], field)
+                        normalized_items.append(scalar_item)
+                        continue
+                    normalized_item: dict[str, Any] = {}
+                    for item_key, item_value in item.items():
+                        if item_value is None:
+                            # Preserve the established line-item null shape.
+                            normalized_item[item_key] = None
+                            continue
+                        if not isinstance(item_value, dict) or "value" not in item_value or "Page" not in item_value:
+                            invalid.append(field)
+                            break
+                        normalized_item[item_key] = normalize_field(item_value)
+                        normalized_item[item_key]["Page"] = self._page(normalized_item[item_key]["Page"], field)
+                    else:
+                        normalized_items.append(normalized_item)
                 normalized[field] = normalized_items
                 continue
-            if not isinstance(raw, dict) or set(raw) != {"value", "Page"}:
+            if not isinstance(raw, dict) or not {"value", "Page"}.issubset(raw):
                 invalid.append(field)
                 continue
-            normalized[field] = {"value": raw["value"], "Page": self._page(raw["Page"], field)}
+            normalized[field] = normalize_field(raw)
+            normalized[field]["Page"] = self._page(normalized[field]["Page"], field)
 
         if invalid:
             raise PdfExtractionError(

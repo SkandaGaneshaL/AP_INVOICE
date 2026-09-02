@@ -5,6 +5,9 @@ from typing import Any, Protocol
 
 from .models import EvaluationResult, RuleFeedbackPacket, RuleGenerationContext, UsageSummary
 from .normalization import apply_policy, infer_policy
+from .candidate_binder import bind_field
+from .layout_graph import LayoutGraph
+from .operators import CorrectionExample, FieldProgram
 
 
 class ExtractionExecutor(Protocol):
@@ -34,6 +37,25 @@ class EvaluationTrace:
     reusable_wording: bool = True
     schema_valid: bool = True
     usage: UsageSummary | None = None
+
+
+def evaluate_candidate_program(graph: LayoutGraph, current_programs: dict[str, FieldProgram], field_key: str,
+                               candidate_program: FieldProgram, correction: CorrectionExample) -> EvaluationResult:
+    """Evaluate a candidate against the current layout without calling an LLM."""
+    del current_programs
+    context = {"field_key": field_key, "old_value": correction.old_value, "new_value": correction.new_value}
+    bound = bind_field(candidate_program, graph, context)
+    expected = correction.new_value
+    match = _same(bound.transformed_value, expected)
+    evidence_supported = bound.status == "unique" and bool(bound.evidence)
+    score = 1.0 if match and evidence_supported else .0
+    return EvaluationResult(score=score, feedback="Counterfactual program matched the corrected value and layout evidence." if score else "Counterfactual program did not produce a unique supported match.",
+                             confidence="normal" if score else "failed", field_match=match,
+                             evidence_supported=evidence_supported, schema_valid=bound.status == "unique",
+                             candidate_status="accepted_with_transformation" if score else "rejected",
+                             promotion_eligible=score >= .9, expected_value=expected,
+                             actual_value=bound.transformed_value, canonical_actual_value=bound.canonical_value,
+                             transformation_expected=(candidate_program.transform[0].op if candidate_program.transform else None))
 
 
 def _norm(value: Any) -> str:

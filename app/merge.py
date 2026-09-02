@@ -15,10 +15,12 @@ def validate_sentence(sentence: str) -> str:
     return sentence
 
 
-def append_rule(rule: RuleRecord, sentence: str) -> bool:
+def append_rule(rule: RuleRecord, sentence: str, program: dict | None = None) -> bool:
     sentence = validate_sentence(sentence)
     existing = {normalize(x) for x in rule.DETAILED_RULE}
     if normalize(sentence) in existing:
         return False
     rule.DETAILED_RULE.append(sentence)
+    if program is not None:
+        rule.PROGRAM = program
     return True

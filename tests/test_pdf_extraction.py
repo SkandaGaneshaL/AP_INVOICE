@@ -67,6 +67,46 @@ def test_numeric_page_is_normalized_and_diagnostics_are_returned():
     assert diagnostics["request_id"] == "fake-request"
 
 
+def test_provenance_fields_are_not_returned_in_public_extraction():
+    output = json.dumps({
+        "InvoiceCurrency": {
+            "value": "INR", "Page": "2", "raw_value": "INR",
+            "canonical_value": "INR", "bbox": [1, 2, 3, 4],
+            "source_label": "Currency", "evidence_text": "Currency INR",
+            "confidence": 0.99, "absent_reason": None,
+        },
+        "InvoiceNumber": {"value": "INV-1", "Page": 1, "confidence": 0.9},
+    })
+    extracted, _, _ = OciPdfExtractor(Repo(), client=FakeClient([Response(output)])).extract(b"%PDF-1.4 fake")
+    assert extracted == {
+        "InvoiceCurrency": {"value": "INR", "Page": 2},
+        "InvoiceNumber": {"value": "INV-1", "Page": 1},
+    }
+
+
+def test_missing_markers_are_normalized_without_provenance_fields():
+    output = json.dumps({
+        "InvoiceCurrency": {"value": "Not present", "Page": "1", "raw_value": "Not present"},
+        "InvoiceNumber": {"value": "N/A", "Page": 1, "confidence": 0.1},
+    })
+    extracted, _, _ = OciPdfExtractor(Repo(), client=FakeClient([Response(output)])).extract(b"%PDF-1.4 fake")
+    assert extracted["InvoiceCurrency"] == {"value": None, "Page": 1}
+    assert extracted["InvoiceNumber"] == {"value": None, "Page": 1}
+
+
+def test_line_item_provenance_is_not_returned_and_null_fields_are_preserved():
+    output = json.dumps({
+        "LineItemDescription": [{
+            "LineItemDescription": {"value": "Service", "Page": "1", "raw_value": "Service"},
+            "TaxAmount": None,
+        }],
+        "InvoiceCurrency": {"value": "INR", "Page": 1},
+    })
+    extracted, _, _ = OciPdfExtractor(ListRepo(), client=FakeClient([Response(output)])).extract(b"%PDF-1.4 fake")
+    assert extracted["LineItemDescription"][0]["LineItemDescription"] == {"value": "Service", "Page": 1}
+    assert extracted["LineItemDescription"][0]["TaxAmount"] is None
+
+
 def test_invalid_page_is_repaired_once_then_fails_with_details():
     invalid = json.dumps({
         "InvoiceCurrency": {"value": "INR", "Page": "Page 2"},
