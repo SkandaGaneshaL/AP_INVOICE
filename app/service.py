@@ -15,6 +15,7 @@ from .operators import FieldProgram, SelectOp, TransformOp
 from .transform_induction import induce_transforms, induce_transform_candidates
 from .type_inference import infer_type
 from .rule_compiler import compile_program, compile_rule_update
+from .evaluation import evaluate_program_counterfactual
 from .operators import CorrectionExample, CompetingHit
 from .type_inference import infer_field_type
 
@@ -108,6 +109,12 @@ class UpdateRulesService:
                                        label_text=packet.evidence[0].label or "" if packet.evidence else "")
         compiled_result = compile_rule_update(context.current_program, correction, ranked, None)
         program = compiled_result.program
+        # A legacy/no-op program can contain an identity step before the
+        # induced transform.  Keep the persisted executable program minimal so
+        # metadata, evaluation, and execution all report the same operator.
+        non_identity = [item for item in program.transform if item.op != "identity"]
+        if non_identity:
+            program.transform = non_identity
         program.select = SelectOp(label_aliases=[packet.evidence[0].label] if packet.evidence[0].label else [])
         compiled = compile_program(program)
         from .normal_strategy import GeneratedRuleCandidate
@@ -116,7 +123,11 @@ class UpdateRulesService:
             metadata={"model": None, "reason": ranked[0].rationale,
                       "decision_summary": ranked[0].rationale, "program": program.model_dump(),
                       "candidate_status": "accepted_with_transformation",
-                      "transformation": program.transform[0].op},
+                      "transformation": program.transform[0].op,
+                      "operator": ("identifier_strip_leading_alpha"
+                                   if program.transform[0].op == "strip_leading_alpha_token"
+                                   else program.transform[0].op),
+                      "raw_value": packet.evidence[0].raw_value},
         )
 
     def _run_strategy(self, generator, strategy, request, rules, changes, *, tolerate_failure=False):
@@ -135,7 +146,16 @@ class UpdateRulesService:
                 candidate = self._deterministic_candidate(context) or self._candidate(generator, context)
                 if not candidate.sentence:
                     raise ValueError("strategy produced an empty rule sentence")
-                if self.evaluator and context.document_bytes:
+                if candidate.metadata.get("program") and context.feedback_packet and context.feedback_packet.evidence:
+                    program = FieldProgram.model_validate(candidate.metadata["program"])
+                    candidate.evaluation = evaluate_program_counterfactual(
+                        program,
+                        context.feedback_packet.evidence[0].raw_value or context.old_value,
+                        context.new_value,
+                        context.feedback_packet.evidence[0],
+                        context.feedback_packet.competing_evidence,
+                    )
+                elif self.evaluator and context.document_bytes:
                     candidate.evaluation, _ = self.evaluator.evaluate(context, candidate.sentence)
                 rejected = bool(candidate.evaluation and candidate.evaluation.candidate_status == "rejected")
                 added = False if rejected else append_rule(rule, candidate.sentence, candidate.metadata.get("program"))

@@ -20,6 +20,7 @@ for key, default in (
     ("extracted_json", {}),
     ("corrected_json", {}),
     ("extraction_diagnostics", {}),
+    ("extraction_usage", None),
     ("pdf_signature", None),
     ("candidate_data", None),
     ("update_job_id", None),
@@ -46,6 +47,7 @@ if uploaded_pdf:
         st.session_state.extracted_json = {}
         st.session_state.corrected_json = {}
         st.session_state.extraction_diagnostics = {}
+        st.session_state.extraction_usage = None
         st.session_state.candidate_data = None
         st.session_state.update_job_id = None
         st.session_state.update_job_data = None
@@ -74,12 +76,62 @@ if extract_clicked and uploaded_pdf:
             st.session_state.extracted_json = extracted
             st.session_state.corrected_json = json.loads(json.dumps(extracted))
             st.session_state.extraction_diagnostics = data.get("diagnostics", {})
+            st.session_state.extraction_usage = data.get("usage") or (data.get("diagnostics") or {}).get("usage")
             st.session_state.candidate_data = None
             st.session_state.invoice_payload_editor = json.dumps(extracted, ensure_ascii=False, indent=2)
             st.session_state.corrected_payload_editor = json.dumps(extracted, ensure_ascii=False, indent=2)
             st.rerun()
     except Exception as exc:
         st.error(f"Extraction failed: {exc}")
+
+def _token_display(value):
+    if value is None:
+        return "Unavailable from OCI"
+    if isinstance(value, bool):
+        return "Unavailable from OCI"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "Unavailable from OCI"
+
+
+def render_usage(title, usage, *, unavailable_message="Unavailable from OCI"):
+    """Render provider-reported usage without estimating missing categories."""
+    if not usage:
+        st.caption(f"{title}: Not available")
+        return
+    if hasattr(usage, "model_dump"):
+        usage = usage.model_dump()
+    usage = usage or {}
+    st.markdown(f"**{title}**")
+    columns = st.columns(3)
+    values = [
+        ("Calls", usage.get("calls")),
+        ("Input tokens", usage.get("input_tokens")),
+        ("Output tokens", usage.get("output_tokens")),
+        ("Cached tokens", usage.get("cached_tokens")),
+        ("Reasoning tokens", usage.get("reasoning_tokens")),
+        ("Total tokens", usage.get("total_tokens")),
+    ]
+    for index, (label, value) in enumerate(values):
+        columns[index % 3].metric(label, _token_display(value))
+    semantics = usage.get("output_tokens_semantics")
+    if semantics == "may_include_reasoning_tokens":
+        st.caption("Output tokens may include hidden reasoning tokens.")
+    reasoning_status = usage.get("reasoning_tokens_status")
+    if usage.get("reasoning_tokens") is None and reasoning_status:
+        st.caption(f"Reasoning-token status: {reasoning_status}")
+    with st.expander(f"{title} diagnostics"):
+        st.json({
+            key: usage.get(key)
+            for key in (
+                "reported_calls", "unknown_calls", "missing_categories",
+                "reasoning_tokens_reported", "reasoning_tokens_status",
+                "output_tokens_semantics",
+            )
+            if key in usage
+        })
+
 
 left, right = st.columns(2)
 with left:
@@ -94,6 +146,8 @@ with left:
     if st.session_state.extraction_diagnostics:
         st.caption("Extraction diagnostics")
         st.json(st.session_state.extraction_diagnostics)
+    if st.session_state.extraction_usage:
+        render_usage("PDF extraction usage", st.session_state.extraction_usage)
 with right:
     st.subheader("User-corrected JSON")
     corrected_text = st.text_area(
@@ -187,12 +241,17 @@ def render_strategy(strategy, title, key_suffix):
         return
     st.subheader(title)
     st.dataframe(strategy.get("changes", []), width="stretch")
-    st.json(strategy.get("evaluation") or strategy.get("metadata") or {})
-    st.info(f"Persistence: {strategy.get('metadata', {}).get('persistence_status', 'not_persisted')}")
-    model = strategy.get("metadata", {}).get("model")
+    metadata = strategy.get("metadata") or {}
+    st.json(strategy.get("evaluation") or metadata or {})
+    st.info(f"Persistence: {metadata.get('persistence_status', 'not_persisted')}")
+    model = metadata.get("model")
     if model:
         st.caption(f"Sentence-generation model: {model}")
+    usage = strategy.get("usage")
+    if usage:
+        render_usage("Rule-generation usage", usage)
     for change in strategy.get("changes", []):
+        generation = change.get("generation") or {}
         if change.get("generated_sentence"):
             st.markdown(f"**{change.get('FIELD_KEY', 'Field')} instruction**")
             st.write(change["generated_sentence"])
@@ -201,7 +260,6 @@ def render_strategy(strategy, title, key_suffix):
         elif change.get("status") in {"generation_failed", "unavailable"}:
             reason = change.get("reason", "candidate generation failed")
             st.error(f"{change.get('FIELD_KEY', 'Field')}: {reason}")
-            generation = change.get("generation") or {}
         if generation:
             with st.expander("Generation diagnostics", expanded=True):
                 st.json(generation)
@@ -291,6 +349,7 @@ def render_update_job(job):
             st.subheader("Generative OCI")
             st.info("No rule candidate was generated. No changed mapped fields were detected.")
             st.caption("No OCI sentence-generation call was made.")
+            st.caption("Rule-generation usage: Not applicable.")
             return
         render_strategy(normal, "Generative OCI", "generative")
     elif job.get("normal_status") in {"queued", "running"}:

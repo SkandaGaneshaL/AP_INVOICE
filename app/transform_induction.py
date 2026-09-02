@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 from .operators import CompetingHit, CorrectionExample, EvidenceHit, FieldProgram, OperatorCandidate, TransformOp
 from .type_inference import FieldType, InferredType
+from .type_inference import parse_date as parse_date_value, parse_number
 
 _IDENTIFIER_CORE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _DATE = re.compile(r"^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}$")
@@ -37,7 +38,8 @@ def _strip_trailing_alpha(value: str) -> str | None:
 
 
 def _parse_money(value: str) -> str:
-    return re.sub(r"[^0-9.-]", "", value).replace(",", "")
+    parsed = parse_number(value)
+    return format(parsed, "f") if parsed is not None else re.sub(r"[^0-9.-]", "", value).replace(",", "")
 
 
 def apply_program(program: FieldProgram, value: Any) -> Any:
@@ -53,7 +55,7 @@ def apply_program(program: FieldProgram, value: Any) -> Any:
             current = " ".join(text.split())
         elif op == "case_fold":
             current = text.casefold()
-        elif op == "strip_leading_alpha_token":
+        elif op in {"strip_leading_alpha_token", "identifier_strip_leading_alpha"}:
             current = _strip_leading_alpha(text) or current
         elif op == "strip_trailing_alpha":
             current = _strip_trailing_alpha(text) or current
@@ -64,15 +66,17 @@ def apply_program(program: FieldProgram, value: Any) -> Any:
             index = int(transform.args.get("index", 0))
             parts = _tokens(text)
             current = parts[index] if 0 <= index < len(parts) else current
-        elif op == "parse_money":
+        elif op in {"parse_money", "money_canonicalize", "numeric_thousands_canonicalize"}:
             current = _parse_money(text)
-        elif op == "parse_date":
-            for format_hint in ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d", "%m-%d-%Y", "%d-%m-%Y", "%m.%d.%Y", "%d.%m.%Y"):
-                try:
-                    current = datetime.strptime(text.strip(), format_hint).strftime("%d/%m/%Y")
-                    break
-                except ValueError:
-                    continue
+        elif op in {"parse_date", "date_format_repattern"}:
+            parsed = parse_date_value(text)
+            if parsed:
+                target = transform.args.get("target_pattern")
+                if target:
+                    output_format = {"DD/MM/YYYY": "%d/%m/%Y", "MM/DD/YYYY": "%m/%d/%Y", "YYYY-MM-DD": "%Y-%m-%d"}.get(target, "%d/%m/%Y")
+                else:
+                    output_format = "%d/%m/%Y"
+                current = parsed[0].strftime(output_format)
         elif op == "join_address_block":
             current = " ".join(text.splitlines())
         elif op == "drop_label_echo":
@@ -107,15 +111,17 @@ def induce_transform_candidates(
     field_type: FieldType | InferredType | str,
     old_value: Any,
     new_value: Any,
-    evidence_hits: list[EvidenceHit],
-    competing_hits: list[CompetingHit],
+    evidence_hits: list[EvidenceHit] | None = None,
+    competing_hits: list[CompetingHit] | None = None,
     history: list[CorrectionExample] | list[dict[str, Any]] | None = None,
     max_depth: int = 3,
     beam_size: int = 8,
 ) -> list[OperatorCandidate]:
     """Synthesize a bounded ranked DSL program from an input/output example."""
-    del evidence_hits, competing_hits
-    del max_depth  # The v1 DSL has one-step primitives; composition is bounded by the API contract.
+    evidence_hits = evidence_hits or []
+    competing_hits = competing_hits or []
+    max_depth = max(1, min(int(max_depth), 3))
+    beam_size = max(1, min(int(beam_size), 8))
     kind = str(getattr(field_type, "value", field_type))
     old, new = _text(old_value), _text(new_value)
     candidates: list[OperatorCandidate] = []
@@ -131,6 +137,8 @@ def induce_transform_candidates(
         if (_strip_leading_alpha(old) or "").casefold() == new.strip().casefold() and _strip_leading_alpha(old) is not None:
             candidates.append(_candidate("strip_leading_alpha_token", "remainder_is_numeric_or_identifier_core", 1,
                                          "the corrected value is the identifier core after a leading alphabetic token", field_type=kind))
+            candidates.append(_candidate("identifier_strip_leading_alpha", "remainder_is_identifier_core", 1.05,
+                                         "the corrected value is the identifier core after a leading alphabetic prefix", field_type=kind))
         if (_strip_trailing_alpha(old) or "").casefold() == new.strip().casefold() and _strip_trailing_alpha(old) is not None:
             candidates.append(_candidate("strip_trailing_alpha", "prefix_is_numeric_or_identifier_core", 1,
                                          "the corrected value removes a trailing alphabetic suffix", field_type=kind))
@@ -138,9 +146,12 @@ def induce_transform_candidates(
         if part.casefold() == new.strip().casefold() and len(_tokens(old)) > 1:
             candidates.append(_candidate("split_token", f"token_{index}", 2, f"the correction selects token {index}", field_type=kind, args={"index": index}))
     if kind == FieldType.DATE.value and _DATE.fullmatch(old.strip()) and _DATE.fullmatch(new.strip()) and old != new:
-        candidates.append(_candidate("parse_date", "same_calendar_date", 1, "the correction changes date representation", field_type=kind))
-    if kind == FieldType.MONEY.value and (_MONEY.fullmatch(old.strip()) or _MONEY.fullmatch(new.strip())) and _parse_money(old) == _parse_money(new):
-        candidates.append(_candidate("parse_money", "same_numeric_amount", 1, "the correction changes money separators or currency decoration", field_type=kind))
+        parsed_old, parsed_new = parse_date_value(old), parse_date_value(new)
+        if parsed_old and parsed_new and parsed_old[0] == parsed_new[0]:
+            target = "MM/DD/YYYY" if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", new.strip()) and int(new.split("/")[0]) <= 12 else None
+            candidates.append(_candidate("date_format_repattern", "same_calendar_date", 1, "the correction changes date representation", field_type=kind, args={"target_pattern": target} if target else {}))
+    if kind in {FieldType.MONEY.value, "NUMBER"} and (_MONEY.fullmatch(old.strip()) or _MONEY.fullmatch(new.strip())) and _parse_money(old) == _parse_money(new):
+        candidates.append(_candidate("numeric_thousands_canonicalize", "same_numeric_amount", 1, "the correction changes grouping separators or currency decoration", field_type=kind))
     if "\n" in old and " ".join(old.splitlines()) == new.strip():
         candidates.append(_candidate("join_address_block", "same_address_components", 1, "line breaks changed without changing address components", field_type=kind))
     if new.strip().casefold() in {"", "null", "none", "n/a"}:
@@ -157,6 +168,8 @@ def induce_transform_candidates(
     for candidate in sorted(candidates, key=lambda item: (item.mdl_cost, item.program.transform[0].op)):
         key = (candidate.program.transform[0].op, str(candidate.program.transform[0].args))
         unique.setdefault(key, candidate)
+    # The current DSL uses primitive candidates; the bounded beam contract is
+    # still enforced here and leaves room for composed operators to be added.
     return list(unique.values())[: max(1, min(beam_size, 8))]
 
 

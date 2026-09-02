@@ -21,10 +21,16 @@ class TransformOp(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
 
 
+class FormatOp(BaseModel):
+    kind: str | None = None
+    target_pattern: str | None = None
+
+
 class FieldProgram(BaseModel):
     select: SelectOp = Field(default_factory=SelectOp)
     disambiguate: DisambiguateOp = Field(default_factory=DisambiguateOp)
     transform: list[TransformOp] = Field(default_factory=lambda: [TransformOp()])
+    format: FormatOp = Field(default_factory=FormatOp)
     null_policy: str = "labeled_empty_to_null"
     section_prior: str | None = None
     sentence: str | None = None

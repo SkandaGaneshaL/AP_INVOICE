@@ -154,3 +154,31 @@ def test_summary_preserves_unsupported_reasoning_shape_status():
     summary = summarize_usage([usage])
     assert summary.reasoning_tokens is None
     assert summary.reasoning_tokens_status == "unsupported_response_shape"
+
+
+def test_normalizer_supports_camel_case_and_top_level_cached_tokens():
+    usage = normalize_provider_usage({
+        "promptTokens": 100,
+        "completionTokens": 25,
+        "cachedTokens": 8,
+        "totalTokens": 125,
+        "completionTokensDetails": {"reasoningTokens": 7},
+    }, model="openai.gpt-oss-20b")
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 25
+    assert usage.cached_tokens == 8
+    assert usage.reasoning_tokens == 7
+    assert usage.reasoning_tokens_location == "completion_tokens_details.reasoning_tokens"
+    assert usage.total_tokens == 125
+
+
+def test_normalizer_supports_camel_case_nested_cached_tokens():
+    usage = normalize_provider_usage({
+        "inputTokens": 100,
+        "outputTokens": 25,
+        "totalTokens": 125,
+        "inputTokensDetails": {"cachedTokens": 8},
+        "outputTokensDetails": {"reasoningTokens": 0},
+    })
+    assert usage.cached_tokens == 8
+    assert usage.reasoning_tokens == 0

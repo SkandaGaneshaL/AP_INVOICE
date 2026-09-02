@@ -112,7 +112,6 @@ class ChangeResult(BaseModel):
     generated_sentence: str | None = None
     oci_request_id: str | None = None
     response_format_used: str | None = None
-    reason: str | None = None
     error: dict[str, Any] | None = None
     generation: dict[str, Any] = Field(default_factory=dict)
     strategy: str = "generative"
@@ -321,6 +320,8 @@ class UpdateJobCreateResponse(BaseModel):
     oci_sentence_generation_call_count: int = 0
     reasoning: ReasoningConfig | None = None
     reasoning_ui_contract_version: str = "safe-summary-v1"
+    sentence_generation_usage: UsageSummary | None = None
+    extraction_usage: UsageSummary | None = None
 
 
 class UpdateJobStatusResponse(BaseModel):
@@ -345,6 +346,8 @@ class UpdateJobStatusResponse(BaseModel):
     oci_sentence_generation_called: bool = False
     oci_sentence_generation_call_count: int = 0
     reasoning_ui_contract_version: str = "safe-summary-v1"
+    sentence_generation_usage: UsageSummary | None = None
+    extraction_usage: UsageSummary | None = None
 
 
 class GepaJobResponse(BaseModel):

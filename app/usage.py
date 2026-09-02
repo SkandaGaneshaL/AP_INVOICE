@@ -6,15 +6,35 @@ from .models import TokenUsage, UsageSummary
 
 USAGE_NORMALIZER_VERSION = "provider-usage-v3"
 
+_ALIASES = {
+    "prompt_tokens": ("prompt_tokens", "promptTokens"),
+    "input_tokens": ("input_tokens", "inputTokens"),
+    "completion_tokens": ("completion_tokens", "completionTokens"),
+    "output_tokens": ("output_tokens", "outputTokens"),
+    "total_tokens": ("total_tokens", "totalTokens"),
+    "reasoning_tokens": ("reasoning_tokens", "reasoningTokens"),
+    "cached_tokens": ("cached_tokens", "cachedTokens"),
+    "cache_read_input_tokens": ("cache_read_input_tokens", "cacheReadInputTokens"),
+    "prompt_tokens_details": ("prompt_tokens_details", "promptTokensDetails"),
+    "input_tokens_details": ("input_tokens_details", "inputTokensDetails"),
+    "completion_tokens_details": ("completion_tokens_details", "completionTokensDetails"),
+    "output_tokens_details": ("output_tokens_details", "outputTokensDetails"),
+}
+
 
 def _get(value: Any, name: str) -> Any:
     if value is None:
         return None
+    names = _ALIASES.get(name, (name,))
     if isinstance(value, dict):
-        return value.get(name)
-    result = getattr(value, name, None)
-    if result is not None:
-        return result
+        for candidate in names:
+            if candidate in value:
+                return value[candidate]
+        return None
+    for candidate in names:
+        result = getattr(value, candidate, None)
+        if result is not None:
+            return result
     # Some OCI SDK model versions expose a safe to_dict() representation
     # rather than all nested fields as normal attributes.  Read only the
     # requested allowlisted field; never retain the full serialized object.
@@ -24,7 +44,11 @@ def _get(value: Any, name: str) -> Any:
             serialized = to_dict()
         except Exception:
             return None
-        return serialized.get(name) if isinstance(serialized, dict) else None
+        if isinstance(serialized, dict):
+            for candidate in names:
+                if candidate in serialized:
+                    return serialized[candidate]
+        return None
     return None
 
 
@@ -50,19 +74,20 @@ def normalize_provider_usage(usage: Any, *, model: str | None = None,
     input_tokens = _token_value(first_not_none(_get(usage, "prompt_tokens"), _get(usage, "input_tokens")))
     output_tokens = _token_value(first_not_none(_get(usage, "completion_tokens"), _get(usage, "output_tokens")))
     prompt_details = _get(usage, "prompt_tokens_details")
-    prompt_detail_name = "prompt_tokens_details"
-    if prompt_details is None:
-        prompt_details = _get(usage, "input_tokens_details")
-        prompt_detail_name = "input_tokens_details"
+    input_details = _get(usage, "input_tokens_details")
     completion_details = _get(usage, "completion_tokens_details")
-    completion_detail_name = "completion_tokens_details"
-    if completion_details is None:
-        completion_details = _get(usage, "output_tokens_details")
-        completion_detail_name = "output_tokens_details"
-    cached_tokens = _token_value(first_not_none(_get(prompt_details, "cached_tokens"), _get(prompt_details, "cache_read_input_tokens")))
+    output_details = _get(usage, "output_tokens_details")
+    cached_tokens = _token_value(first_not_none(
+        _get(usage, "cached_tokens"),
+        _get(prompt_details, "cached_tokens"),
+        _get(input_details, "cached_tokens"),
+        _get(prompt_details, "cache_read_input_tokens"),
+        _get(input_details, "cache_read_input_tokens"),
+    ))
     reasoning_sources = (
         ("reasoning_tokens", _get(usage, "reasoning_tokens")),
-        (f"{completion_detail_name}.reasoning_tokens", _get(completion_details, "reasoning_tokens")),
+        ("completion_tokens_details.reasoning_tokens", _get(completion_details, "reasoning_tokens")),
+        ("output_tokens_details.reasoning_tokens", _get(output_details, "reasoning_tokens")),
         ("completion_tokens.reasoning_tokens", _get(_get(usage, "completion_tokens"), "reasoning_tokens")),
         ("output_tokens.reasoning_tokens", _get(_get(usage, "output_tokens"), "reasoning_tokens")),
     )
@@ -78,11 +103,13 @@ def normalize_provider_usage(usage: Any, *, model: str | None = None,
             break
     total_tokens = _token_value(_get(usage, "total_tokens"))
     usage_fields = _present_fields(usage, (
-        "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens", "total_tokens", "reasoning_tokens",
+        "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens", "total_tokens", "cached_tokens", "reasoning_tokens",
         "prompt_tokens_details", "completion_tokens_details", "input_tokens_details", "output_tokens_details",
     ))
     nested_details = _present_fields(prompt_details, ("cached_tokens", "cache_read_input_tokens"))
+    nested_details += _present_fields(input_details, ("cached_tokens", "cache_read_input_tokens"))
     nested_details += _present_fields(completion_details, ("reasoning_tokens",))
+    nested_details += _present_fields(output_details, ("reasoning_tokens",))
     nested_details += _present_fields(_get(usage, "completion_tokens"), ("reasoning_tokens",))
     nested_details += _present_fields(_get(usage, "output_tokens"), ("reasoning_tokens",))
     values = (

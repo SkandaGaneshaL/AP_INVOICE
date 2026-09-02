@@ -102,6 +102,8 @@ def update_rules(request: UpdateRequest):
                                        extraction_model=os.getenv("OCI_EXTRACTION_MODEL_ID", "google.gemini-2.5-flash"),
                                        change_detection=change_detection,
                                        reasoning=reasoning,
+                                       sentence_generation_usage=None,
+                                       extraction_usage=None,
                                        reasoning_ui_contract_version=REASONING_UI_CONTRACT_VERSION)
     except KeyError as exc:
         raise HTTPException(status_code=410, detail={"code": "DOCUMENT_EXPIRED", "message": "Please upload and extract the invoice again."}) from exc
@@ -317,6 +319,8 @@ def _job_response(job_id: str):
             oci_sentence_generation_call_count=data.get("oci_sentence_generation_call_count", 0),
             reasoning=data.get("reasoning", {}),
             reasoning_ui_contract_version=data.get("reasoning_ui_contract_version", "missing"),
+            sentence_generation_usage=data.get("sentence_generation_usage"),
+            extraction_usage=data.get("extraction_usage"),
             error=data.get("error"),
             requested_model=data.get("requested_model", "gpt-oss-20b"),
             effective_model=data.get("effective_model", "openai.gpt-oss-20b"),
@@ -398,6 +402,9 @@ def health():
         "sentence_generation_project_required": False,
         "sentence_generation_serving_mode": sentence_settings.get("serving_mode") or "on_demand",
         "sentence_generation_endpoint_configured": bool(sentence_settings.get("endpoint_id")),
+        "usage_normalizer_version": USAGE_NORMALIZER_VERSION,
+        "sentence_generation_usage_available": True,
+        "extraction_usage_available": True,
     }
 
 

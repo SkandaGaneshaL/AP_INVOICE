@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any
 
@@ -62,3 +64,52 @@ def infer_field_type(field_key: str | None, display_label: str | None, old_value
 
 def infer_type(old_value: Any, new_value: Any, label: str = "", evidence_text: str = "") -> FieldType:
     return infer_field_type(None, label, old_value, new_value, evidence_text)
+
+
+def parse_number(value: Any) -> Decimal | None:
+    text = _s(value)
+    if not text:
+        return None
+    cleaned = re.sub(r"[^0-9+\-.,]", "", text)
+    if not cleaned or cleaned.count("-") > 1 or cleaned.count("+") > 1:
+        return None
+    # Treat the final separator as decimal only when exactly two digits follow it;
+    # all other separators are grouping punctuation.
+    if "." in cleaned or "," in cleaned:
+        last = max(cleaned.rfind("."), cleaned.rfind(","))
+        tail = cleaned[last + 1:]
+        if len(tail) == 2 and cleaned[:last].replace(",", "").replace(".", "").isdigit():
+            cleaned = cleaned[:last].replace(",", "").replace(".", "") + "." + tail
+        else:
+            cleaned = cleaned.replace(",", "").replace(".", "")
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return None
+
+
+def parse_date(value: Any) -> tuple[datetime, str] | None:
+    text = _s(value)
+    formats = ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%m-%d-%Y", "%d.%m.%Y", "%m.%d.%Y")
+    matches = []
+    for pattern in formats:
+        try:
+            matches.append((datetime.strptime(text, pattern), pattern))
+        except ValueError:
+            continue
+    if not matches:
+        return None
+    unique_dates = {item[0] for item in matches}
+    if len(unique_dates) > 1:
+        return None
+    return matches[0]
+
+
+def identifier_core(value: Any) -> str | None:
+    text = _s(value)
+    if not text or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _./-]*", text):
+        return None
+    compact = re.sub(r"[^A-Za-z0-9]", "", text)
+    if not compact or not any(char.isdigit() for char in compact):
+        return None
+    return compact

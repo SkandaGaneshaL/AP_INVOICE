@@ -25,6 +25,8 @@ class _UpdateJob:
         "reason": "GEPA is detached from the active application",
     })
     usage: dict[str, Any] = field(default_factory=dict)
+    sentence_generation_usage: dict[str, Any] | None = None
+    extraction_usage: dict[str, Any] | None = None
     termination: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] | None = None
     requested_model: str = "gpt-oss-20b"
@@ -173,6 +175,7 @@ class RuleUpdateJobStore:
             job.progress.update(normal_completed_fields=completed_fields, normal_total_fields=total_fields)
             if isinstance(result, dict) and result.get("usage"):
                 job.usage = {"normal": result["usage"]}
+                job.sentence_generation_usage = dict(result["usage"])
             if isinstance(result, dict):
                 metadata = result.get("metadata") or {}
                 job.oci_sentence_generation_called = bool(metadata.get("oci_sentence_generation_called", job.oci_sentence_generation_called))
@@ -212,7 +215,16 @@ class RuleUpdateJobStore:
             job.normal_result = result
             job.termination = dict(termination or {"reason": "gepa_disabled"})
             if usage is not None:
-                job.usage = dict(usage)
+                # Keep the legacy aggregate shape stable while exposing the
+                # convenient sentence_generation_usage alias separately.
+                if isinstance(usage, dict) and isinstance(usage.get("normal"), dict):
+                    job.usage = dict(usage)
+                    normal_usage = usage["normal"]
+                else:
+                    normal_usage = dict(usage) if isinstance(usage, dict) else None
+                    job.usage = {"normal": normal_usage} if normal_usage is not None else {}
+                if normal_usage is not None:
+                    job.sentence_generation_usage = dict(normal_usage)
             if isinstance(result, dict):
                 metadata = result.get("metadata") or {}
                 job.oci_sentence_generation_called = bool(metadata.get("oci_sentence_generation_called", job.oci_sentence_generation_called))
@@ -248,6 +260,8 @@ class RuleUpdateJobStore:
                 "effective_config": dict(job.effective_config),
                 "termination": dict(job.termination),
                 "usage": dict(job.usage),
+                "sentence_generation_usage": dict(job.sentence_generation_usage) if job.sentence_generation_usage else None,
+                "extraction_usage": dict(job.extraction_usage) if job.extraction_usage else None,
                 "error": dict(job.error) if job.error else None,
                 "requested_model": job.requested_model,
                 "effective_model": job.effective_model,

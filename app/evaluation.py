@@ -8,6 +8,7 @@ from .normalization import apply_policy, infer_policy
 from .candidate_binder import bind_field
 from .layout_graph import LayoutGraph
 from .operators import CorrectionExample, FieldProgram
+from .transform_induction import apply_program
 
 
 class ExtractionExecutor(Protocol):
@@ -56,6 +57,41 @@ def evaluate_candidate_program(graph: LayoutGraph, current_programs: dict[str, F
                              promotion_eligible=score >= .9, expected_value=expected,
                              actual_value=bound.transformed_value, canonical_actual_value=bound.canonical_value,
                              transformation_expected=(candidate_program.transform[0].op if candidate_program.transform else None))
+
+
+def evaluate_program_counterfactual(program: FieldProgram, raw_evidence_value: Any,
+                                    corrected_value: Any, evidence_hit: Any = None,
+                                    competing_hits: list[Any] | None = None,
+                                    existing_programs: dict[str, FieldProgram] | None = None) -> EvaluationResult:
+    """Evaluate the executable program without extraction-model calls."""
+    del existing_programs
+    actual = apply_program(program, raw_evidence_value)
+    match = _same(actual, corrected_value)
+    supported = evidence_hit is not None
+    # Distinct order/shipment references remain audit evidence and do not
+    # invalidate a correctly labelled match. Only a competitor supporting the
+    # same corrected value is a promotion blocker.
+    competing = any(
+        _norm(getattr(hit, "normalized_value", None) or getattr(hit, "value", None))
+        == _norm(corrected_value)
+        for hit in (competing_hits or [])
+    )
+    score = 1.0 if match and supported else 0.0
+    return EvaluationResult(
+        score=score,
+        feedback=("Counterfactual program matched the corrected value and selected evidence."
+                  if score else "Counterfactual program did not match supported evidence."),
+        confidence="normal" if score else "failed",
+        field_match=match,
+        evidence_supported=supported,
+        schema_valid=True,
+        candidate_status="accepted_with_transformation" if score else "rejected",
+        promotion_eligible=bool(match and supported and not competing),
+        expected_value=corrected_value,
+        actual_value=actual,
+        canonical_actual_value=actual,
+        transformation_expected=(program.transform[0].op if program.transform else None),
+    )
 
 
 def _norm(value: Any) -> str:
