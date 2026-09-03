@@ -1,0 +1,1 @@
+Write exactly one imperative, reusable extraction-rule sentence for the single field in the JSON payload. Do not hard-code invoice values, mention other fields, add fallback hops, or output reasoning. Return only {"sentence":"..."}; use no Markdown and no more than 40 words.

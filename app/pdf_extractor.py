@@ -145,7 +145,7 @@ class OciPdfExtractor:
         prompt: str,
         normalization_mode: str = "none",
     ) -> tuple[dict[str, Any], bool, UsageSummary]:
-        if "LineItems" not in extracted or extracted.get("LineItems"):
+        if "LineItems" not in extracted or extracted.get("LineItems") or not self._has_item_table(document_bytes):
             return extracted, False, UsageSummary()
         repair_prompt = (
             f"{prompt}\n\n"
@@ -166,6 +166,18 @@ class OciPdfExtractor:
             # primary extraction when the focused repair cannot be completed.
             pass
         return extracted, True, UsageSummary(calls=1, unknown_calls=1)
+
+    @staticmethod
+    def _has_item_table(document_bytes: bytes) -> bool:
+        """Gate the repair call on visible table anchors, not on empty JSON."""
+        try:
+            import pymupdf
+            document = pymupdf.open(stream=document_bytes, filetype="pdf")
+            text = "\n".join(page.get_text("text") for page in document)
+            document.close()
+            return bool(re.search(r"\b(item\s+number|description)\b.*\b(quantity|amount)\b", text, re.I | re.S))
+        except Exception:
+            return False
 
     def extract(
         self,

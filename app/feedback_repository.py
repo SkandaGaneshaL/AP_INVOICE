@@ -69,20 +69,23 @@ class FeedbackRepository:
         history: list[dict[str, Any]],
         limit: int,
     ) -> list[DemonstrationExample]:
-        """Select same-field examples while preferring matching failure types and layouts."""
+        """Select at most two compact compatible examples across fields."""
         ranked: list[tuple[int, dict[str, Any]]] = []
         for row in history:
-            if row.get("field_key") != packet.field_key:
-                continue
             score = 0
             if row.get("failure_type") == packet.failure_type:
                 score += 4
             if row.get("layout_signature") and row.get("layout_signature") == row.get("current_layout_signature"):
                 score += 2
+            packet_labels = {str(item.label).casefold() for item in packet.evidence if item.label}
+            row_label = str(row.get("label_text", "")).casefold()
+            score += sum(1 for label in packet_labels if label and label in row_label)
+            if row.get("field_key") == packet.field_key:
+                score += 1
             ranked.append((score, row))
         ranked.sort(key=lambda item: item[0], reverse=True)
         result: list[DemonstrationExample] = []
-        for _, row in ranked[:max(0, limit)]:
+        for _, row in ranked[:max(0, min(2, limit))]:
             try:
                 result.append(DemonstrationExample.model_validate(row))
             except Exception:

@@ -135,6 +135,7 @@ class ChangeResult(BaseModel):
     visible_reasoning: bool = False
     decision_summary: str | None = None
     reason: str | None = None
+    correction_kind: str | None = None
 
 
 class RuleGenerationContext(BaseModel):

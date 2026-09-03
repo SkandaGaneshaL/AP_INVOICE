@@ -11,13 +11,9 @@ from .normalization import infer_policy
 from .normal_strategy import GeneratedRuleCandidate, GenerativeRuleGenerator
 from .usage import summarize_usage
 from .model_output import ModelOutputError
-from .operators import FieldProgram, SelectOp, TransformOp
-from .transform_induction import induce_transforms, induce_transform_candidates
-from .type_inference import infer_type
-from .rule_compiler import compile_program, compile_rule_update
-from .evaluation import evaluate_program_counterfactual
-from .operators import CorrectionExample, CompetingHit
-from .type_inference import infer_field_type
+from .sentence_gates import evaluate_sentence_gates
+from .rule_merger import merge_rule_sentences
+from .sentence_payload import build_sentence_payload
 
 
 class RuleGenerationError(RuntimeError):
@@ -89,47 +85,6 @@ class UpdateRulesService:
             ))
         return context
 
-    @staticmethod
-    def _deterministic_candidate(context: RuleGenerationContext):
-        """Return a candidate when the typed correction has one supported transform."""
-        packet = context.feedback_packet
-        if not packet or not packet.evidence:
-            return None
-        inferred = infer_field_type(context.field_key, context.display_label, context.old_value, context.new_value,
-                                    packet.evidence[0].snippet if packet.evidence else "")
-        ranked = induce_transform_candidates(inferred, context.old_value, context.new_value,
-                                             [item for item in packet.evidence],
-                                             [CompetingHit.model_validate(item.model_dump()) for item in packet.competing_evidence],
-                                             [item.model_dump() for item in packet.historical_examples])
-        if not ranked or ranked[0].program.transform[0].op == "identity":
-            return None
-        correction = CorrectionExample(field_key=context.field_key, field_type=str(inferred.value),
-                                       old_value=context.old_value, new_value=context.new_value,
-                                       failure_type=packet.failure_type,
-                                       label_text=packet.evidence[0].label or "" if packet.evidence else "")
-        compiled_result = compile_rule_update(context.current_program, correction, ranked, None)
-        program = compiled_result.program
-        # A legacy/no-op program can contain an identity step before the
-        # induced transform.  Keep the persisted executable program minimal so
-        # metadata, evaluation, and execution all report the same operator.
-        non_identity = [item for item in program.transform if item.op != "identity"]
-        if non_identity:
-            program.transform = non_identity
-        program.select = SelectOp(label_aliases=[packet.evidence[0].label] if packet.evidence[0].label else [])
-        compiled = compile_program(program)
-        from .normal_strategy import GeneratedRuleCandidate
-        return GeneratedRuleCandidate(
-            sentence=compiled.sentence, strategy="generative", response_format="compiled_program",
-            metadata={"model": None, "reason": ranked[0].rationale,
-                      "decision_summary": ranked[0].rationale, "program": program.model_dump(),
-                      "candidate_status": "accepted_with_transformation",
-                      "transformation": program.transform[0].op,
-                      "operator": ("identifier_strip_leading_alpha"
-                                   if program.transform[0].op == "strip_leading_alpha_token"
-                                   else program.transform[0].op),
-                      "raw_value": packet.evidence[0].raw_value},
-        )
-
     def _run_strategy(self, generator, strategy, request, rules, changes, *, tolerate_failure=False):
         working = [r.model_copy(deep=True) for r in rules]
         by_key = {r.FIELD_KEY: r for r in working}
@@ -143,22 +98,31 @@ class UpdateRulesService:
                 continue
             try:
                 context = self._context(request, rule, change)
-                candidate = self._deterministic_candidate(context) or self._candidate(generator, context)
+                # The active architecture is intentionally LLM-first. The
+                # legacy deterministic candidate helper remains available for
+                # rollback experiments but is not used in production flow.
+                candidate = self._candidate(generator, context)
                 if not candidate.sentence:
                     raise ValueError("strategy produced an empty rule sentence")
-                if candidate.metadata.get("program") and context.feedback_packet and context.feedback_packet.evidence:
-                    program = FieldProgram.model_validate(candidate.metadata["program"])
-                    candidate.evaluation = evaluate_program_counterfactual(
-                        program,
-                        context.feedback_packet.evidence[0].raw_value or context.old_value,
-                        context.new_value,
-                        context.feedback_packet.evidence[0],
-                        context.feedback_packet.competing_evidence,
-                    )
-                elif self.evaluator and context.document_bytes:
+                if os.getenv("FULL_GOLD_EVAL", "false").lower() == "true" and self.evaluator and context.document_bytes:
                     candidate.evaluation, _ = self.evaluator.evaluate(context, candidate.sentence)
+                else:
+                    candidate.evaluation = evaluate_sentence_gates(candidate.sentence, context)
                 rejected = bool(candidate.evaluation and candidate.evaluation.candidate_status == "rejected")
-                added = False if rejected else append_rule(rule, candidate.sentence, candidate.metadata.get("program"))
+                added = False
+                if not rejected:
+                    before_rules = list(rule.DETAILED_RULE)
+                    merged = merge_rule_sentences(before_rules, candidate.sentence)
+                    rule.DETAILED_RULE = merged.updated_detailed_rule
+                    if candidate.metadata.get("program"):
+                        rule.PROGRAM = candidate.metadata["program"]
+                    added = candidate.sentence.casefold() not in {item.casefold() for item in before_rules}
+                    candidate.metadata["rule_diff"] = {
+                        "before": before_rules,
+                        "after": merged.updated_detailed_rule,
+                        "dropped_bullets": merged.dropped_bullets,
+                        "conflict_resolved": merged.conflict_resolved,
+                    }
                 result = ChangeResult(ID=rule.ID, FIELD_KEY=rule.FIELD_KEY, path=change.path,
                     old_value=change.old_value, new_value=change.new_value,
                     status="rejected" if rejected else "preview", generated_sentence=candidate.sentence,
@@ -176,7 +140,10 @@ class UpdateRulesService:
                 result.visible_reasoning = bool(candidate.metadata.get("visible_reasoning", False))
                 result.decision_summary = candidate.metadata.get("decision_summary")
                 result.reason = candidate.metadata.get("reason") or result.decision_summary
+                result.correction_kind = candidate.metadata.get("correction_kind")
                 candidate.metadata["would_add_rule"] = added
+                candidate.metadata["sentence_payload"] = build_sentence_payload(context)
+                candidate.metadata["correction_kind"] = candidate.metadata["sentence_payload"]["correction_kind"]
                 candidate.metadata["usage"] = candidate.usage.model_dump()
                 candidate.metadata["rule_version"] = context.rule_version
                 candidate.metadata["persistence_status"] = result.persistence_status
@@ -205,11 +172,14 @@ class UpdateRulesService:
                     str(exc.finish_reason or "").upper() in {"MAX_TOKENS", "LENGTH"}
                     or "truncated" in str(exc).lower()
                 )
+                validation_failed = isinstance(exc, ModelOutputError) and bool(diagnostics.get("validation_error"))
                 result = ChangeResult(ID=rule.ID, FIELD_KEY=rule.FIELD_KEY, path=change.path,
                     old_value=change.old_value, new_value=change.new_value, status=status,
                     strategy=strategy, reason=str(exc),
                     error={
-                        "code": "OCI_PROVIDER_OUTPUT_LIMIT" if truncated else "RULE_GENERATION_FAILED",
+                        "code": ("OCI_PROVIDER_OUTPUT_LIMIT" if truncated else
+                                 "OCI_RULE_GENERATION_OUTPUT_VALIDATION" if validation_failed else
+                                 "RULE_GENERATION_FAILED"),
                         "message": str(exc),
                     },
                     generation=generation)

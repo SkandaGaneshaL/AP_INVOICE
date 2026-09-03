@@ -1,0 +1,1 @@
+Extract remaining invoice fields using the global rule set and the supplied supplier overlay. Return only the strict value/Page schema.

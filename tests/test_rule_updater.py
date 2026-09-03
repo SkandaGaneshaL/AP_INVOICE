@@ -4,7 +4,7 @@ from app.rule_repository import RuleRepository
 from app.audit import AuditRepository
 import json
 from types import SimpleNamespace
-from app.oci_provider import OciGeminiRuleGenerator
+from app.oci_provider import OciGeminiRuleGenerator, OciNativeRuleGenerator
 from app.model_output import (
     ModelOutputError,
     parse_rule_response,
@@ -128,8 +128,9 @@ def test_oci_context_generation_preserves_feedback_without_unsupported_keywords(
     )
     result = OciGeminiRuleGenerator(client=Client()).generate(context=context)
     assert result[0] == "Use the explicit currency label."
-    assert "Currency: INR" in captured["prompt"]
-    assert "Reference amount in USD" in captured["prompt"]
+    assert '"positive_labels": ["Currency"]' in captured["prompt"]
+    assert '"field_key": "InvoiceCurrency"' in captured["prompt"]
+    assert "Reference amount in USD" not in captured["prompt"]
     assert "%PDF private bytes" not in captured["prompt"]
 
 
@@ -265,7 +266,7 @@ def test_oci_rule_generation_propagates_decision_summary(monkeypatch):
     class Client:
         def chat(self, details):
             request = details.chat_request
-            assert request.response_format.json_schema.schema["properties"]["decision_summary"]["type"] == "string"
+            assert list(request.response_format.json_schema.schema["properties"]) == ["sentence"]
             return response
 
     monkeypatch.setenv("OCI_COMPARTMENT_ID", "ocid1.compartment.test")
@@ -482,3 +483,39 @@ def test_oci_does_not_retry_deterministic_400(monkeypatch):
             detailed_rule=[], old_value="1", new_value="2"
         )
     assert calls == 1
+
+
+def test_repair_payload_is_compact_and_does_not_repeat_correction_values(monkeypatch):
+    prompts = []
+    responses = [
+        SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason="STOP", message=SimpleNamespace(content=[SimpleNamespace(
+                text='{"sentence":"If the PO is present, use 9497384."}')]))])),
+                       headers={"opc-request-id": "req-invalid"}),
+        SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason="STOP", message=SimpleNamespace(content=[SimpleNamespace(
+                text='{"sentence":"Extract the value from the explicitly labeled purchase-order field."}')]))])),
+                       headers={"opc-request-id": "req-repair"}),
+    ]
+
+    class Client:
+        def chat(self, details):
+            prompts.append(details.chat_request.messages[1].content[0].text)
+            return responses.pop(0)
+
+    monkeypatch.setenv("OCI_COMPARTMENT_ID", "ocid1.compartment.test")
+    result = OciNativeRuleGenerator(client=Client(), model_id="openai.gpt-oss-20b").generate_with_metadata(
+        field_key="PONumber", display_label="PO Number", short_rule="Extract labeled PO.",
+        detailed_rule=[], old_value="HK 9497384", new_value="9497384"
+    )
+    assert result.sentence.startswith("Extract the value")
+    assert "HK 9497384" not in prompts[1]
+    assert "9497384" not in prompts[1]
+
+
+def test_when_is_valid_rule_language_but_fallback_hops_are_rejected():
+    from app.sentence_validators import validate_sentence
+    assert validate_sentence("Extract the value when it is next to its label.", {})
+    import pytest
+    with pytest.raises(ValueError):
+        validate_sentence("Otherwise use a nearby value.", {})

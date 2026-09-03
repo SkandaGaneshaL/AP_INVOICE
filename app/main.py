@@ -20,7 +20,6 @@ from .rule_repository import InMemoryRuleRepository, RuleRepository
 from .audit import AuditRepository
 from .model_output import ModelOutputError
 from .errors import status_code_for_error
-from .evaluation import ExtractionEvaluator
 from .executor import load_extraction_executor
 from .document_store import InMemoryDocumentStore
 from .oci_pdf_client import ExtractionConfigurationError
@@ -81,12 +80,21 @@ def update_rules(request: UpdateRequest):
         ]
         if not changes:
             change_detection["reason"] = "no_mapped_field_changes"
-        effective = {"gepa_enabled": False,
-                     "reason": "GEPA is detached from the active application"}
+        model_settings = rule_generation_settings(selected_model)
+        effective = {
+            "model": selected_model.model_id,
+            "region": model_settings.get("region"),
+            "serving_mode": model_settings.get("serving_mode"),
+            "application_output_limit_sent": False,
+            "provider_managed_output_limit": True,
+            "reasoning_effort": reasoning.get("effective_effort"),
+            "gepa_enabled": False,
+            "reason": "GEPA is detached from the active application",
+        }
         job_id = update_jobs.create(
             {"normal_completed_fields": 0, "normal_total_fields": len(changes),
              "gepa_enabled": False},
-            requested_config={}, effective_config=effective,
+        requested_config={"reasoning_effort": requested_reasoning}, effective_config=effective,
             requested_model=selected_model.key, effective_model=selected_model.model_id,
             extraction_model=os.getenv("OCI_EXTRACTION_MODEL_ID", "google.gemini-2.5-flash"),
             change_detection=change_detection,
@@ -95,7 +103,7 @@ def update_rules(request: UpdateRequest):
         request_snapshot = request.model_copy(deep=True)
         job_executor.submit(_run_update_job, job_id, request_snapshot, original_rules, changes)
         return UpdateJobCreateResponse(job_id=job_id, status="queued", normal_status="queued",
-                                       gepa_status="disabled", requested_config={},
+                                       gepa_status="disabled", requested_config={"reasoning_effort": requested_reasoning},
                                        effective_config=effective,
                                        requested_model=selected_model.key,
                                        effective_model=selected_model.model_id,
@@ -168,6 +176,7 @@ def _aggregate_normal(original_rules, results):
             target = next((rule for rule in rules if str(rule.ID) == str(preview_rule.ID)), None)
             if target is not None:
                 target.DETAILED_RULE = list(preview_rule.DETAILED_RULE)
+                target.PROGRAM = preview_rule.PROGRAM
     return rules, changes, candidates
 
 
@@ -236,11 +245,19 @@ def _run_update_job(job_id: str, request: UpdateRequest, original_rules, changes
             endpoint_id=model_settings["endpoint_id"],
             reasoning_effort=request.reasoning_effort,
         )
-        evaluation_repository = InMemoryRuleRepository(original_rules)
-        executor = OciPdfExtractionExecutor(evaluation_repository) if request.document_id else load_extraction_executor()
+        # Normal correction evaluation is text/evidence-gate based.  Do not
+        # construct an extraction executor (and therefore do not create a
+        # second OCI client) unless an explicitly enabled gold-set evaluation
+        # asks for it.
+        evaluator = None
+        if os.getenv("FULL_GOLD_EVAL", "false").lower() == "true":
+            from .evaluation import ExtractionEvaluator
+            evaluation_repository = InMemoryRuleRepository(original_rules)
+            executor = OciPdfExtractionExecutor(evaluation_repository) if request.document_id else load_extraction_executor()
+            evaluator = ExtractionEvaluator(executor)
         service = UpdateRulesService(
             base, RuleRepository(), AuditRepository(), document_store=document_store,
-            evaluator=ExtractionEvaluator(executor),
+            evaluator=evaluator,
         )
         field_results = []
         for change in changes:
@@ -287,11 +304,19 @@ def _run_update_job(job_id: str, request: UpdateRequest, original_rules, changes
         logger.exception("Update background job failed: %s", job_id)
         reason = str(exc)
         status = getattr(exc, "status", None)
-        if status == 400 and "verbosity" in reason.lower():
+        lowered = reason.lower()
+        if status in {401, 403, 404}:
+            error = {
+                "code": "OCI_RULE_GENERATION_AUTHORIZATION_OR_RESOURCE_ERROR",
+                "message": "OCI rule-generation authorization or resource lookup failed",
+                "reason": reason[:500],
+                "operation": "rule_generation",
+            }
+        elif status == 400 and ("verbosity" in lowered or "invalid json" in lowered):
             error = {
                 "code": "OCI_RULE_GENERATION_INVALID_REQUEST",
                 "message": "OCI rejected the GPT-OSS rule-generation request",
-                "reason": "Invalid verbosity parameter",
+                "reason": "Invalid OCI request payload",
             }
         else:
             error = {

@@ -15,6 +15,8 @@ import threading
 from dotenv import load_dotenv
 from .model_output import ModelOutputError, parse_rule_parts_with_summary
 from .prompt_builder import RulePromptBuilder
+from .sentence_payload import build_sentence_payload
+from .sentence_validators import validate_sentence
 from .models import ProviderGenerationResult
 from .model_registry import (
     REASONING_EFFORT_ENUMS,
@@ -124,21 +126,13 @@ class OciNativeRuleGenerator:
                 historical_examples=legacy_kwargs.get("historical_examples") or [],
             )
         prompt = RulePromptBuilder.normal_payload(context)
-        summary_contract = " and one optional safe business reason. "
-        summary_shape = ",\"reason\":\"One concise business explanation based only on supplied evidence and correction policy.\""
-        summary_rules = ("The reason must be one or two concise business-focused sentences and may refer to the current rule, correction policy, relevant evidence, competing evidence, or historical precedent. It must not contain private chain-of-thought, "
-                         "internal analysis, prompts, credentials, tool traces, or raw invoice values. ")
-        system = ("You write invoice extraction rules. Generate exactly one concise imperative sentence" + summary_contract +
-                  "Describe reusable extraction behavior, never hard-code this invoice value. The current user "
-                  "correction and correction policy override conflicting older rules for this candidate. "
-                  "Return only one JSON object. The first character must be {. "
-                  "Use exactly this shape: {\"sentence\":\"One reusable extraction-rule sentence.\"," + summary_shape + "}. " +
-                  summary_rules +
-                  "Do not output headings, Markdown, code fences, or multiple rule sentences.")
+        system = ("You write invoice extraction rules. Generate exactly one concise imperative sentence for the "
+                  "single field in the supplied JSON. Describe reusable behavior, never repeat or hard-code any "
+                  "literal old or corrected invoice value from the input, mention other fields, add fallback hops, "
+                  "or output explanations. Return only one JSON object with exactly {\"sentence\":\"...\"}. "
+                  "Do not output headings, Markdown, code fences, or multiple sentences.")
         schema = {"type": "object", "properties": {
-                      "sentence": {"type": "string"},
-                      "reason": {"type": "string"},
-                      "decision_summary": {"type": "string"}},
+                      "sentence": {"type": "string"}},
                   "required": ["sentence"], "additionalProperties": False}
         response_format = JsonSchemaResponseFormat(
             json_schema=ResponseJsonSchema(
@@ -151,6 +145,7 @@ class OciNativeRuleGenerator:
         usage_records = []
         generation_finish_reasons = []
         generation_request_ids = []
+        validation_errors = []
 
         def annotate_output_error(error: ModelOutputError) -> ModelOutputError:
             """Attach bounded, non-sensitive retry diagnostics to the error."""
@@ -162,6 +157,7 @@ class OciNativeRuleGenerator:
                     "provider_managed_limit": True,
                     "finish_reasons": generation_finish_reasons,
                     "request_ids": generation_request_ids,
+                    "validation_errors": validation_errors,
                     "reason": "provider_output_truncated_after_repair"
                     if str(error.finish_reason or "").upper() in {"MAX_TOKENS", "LENGTH"}
                     else "output_validation_failed_after_repair",
@@ -174,14 +170,13 @@ class OciNativeRuleGenerator:
             user_payload = prompt
             if repair_attempt:
                 retry_system += " Your previous response was incomplete. Output the JSON object immediately, with no preamble."
-                retry_system += " Include reason when it can be supplied safely; it is optional."
                 # Do not resend the full evidence/history payload during repair;
                 # it consumes context while the requested output is one sentence.
                 user_payload = {
                     "field_key": context.field_key,
                     "existing_rule": context.short_rule,
-                    "correction": f"{context.old_value} -> {context.new_value}",
-                    "instruction": "Return one concise reusable extraction-rule sentence.",
+                    "correction_kind": build_sentence_payload(context)["correction_kind"],
+                    "instruction": "Return exactly one reusable sentence. Do not repeat any literal value from the prior request.",
                 }
             request = GenericChatRequest(
                 api_format="GENERIC", messages=[
@@ -234,6 +229,10 @@ class OciNativeRuleGenerator:
                     try:
                         sentence, format_used, reason = parse_rule_parts_with_summary(parts, finish_reason=finish_reason,
                             diagnostics={"model_id": self.model_id, "model_version": getattr(data, "model_version", None)})
+                        try:
+                            sentence = validate_sentence(sentence, user_payload)
+                        except ValueError as exc:
+                            raise ModelOutputError("sentence failed safety validation", diagnostics={"validation_error": str(exc)}) from exc
                         reason = self._validated_reason(reason, context)
                         return ProviderGenerationResult(
                             sentence=sentence, request_id=request_id, response_format=format_used,
@@ -265,6 +264,8 @@ class OciNativeRuleGenerator:
                             },
                         )
                     except ModelOutputError as exc:
+                        if exc.diagnostics.get("validation_error"):
+                            validation_errors.append(str(exc.diagnostics["validation_error"])[:160])
                         if repair_attempt < self.model_output_retries and _retryable_output_error(exc):
                             continue
                         raise annotate_output_error(exc)
@@ -272,6 +273,10 @@ class OciNativeRuleGenerator:
                 try:
                     sentence, format_used, reason = parse_rule_parts_with_summary([{"text": text}], finish_reason=finish_reason,
                         diagnostics={"model_id": self.model_id, "model_version": getattr(data, "model_version", None)})
+                    try:
+                        sentence = validate_sentence(sentence, user_payload)
+                    except ValueError as exc:
+                        raise ModelOutputError("sentence failed safety validation", diagnostics={"validation_error": str(exc)}) from exc
                     reason = self._validated_reason(reason, context)
                     return ProviderGenerationResult(
                         sentence=sentence, request_id=request_id, response_format=format_used,
@@ -303,6 +308,8 @@ class OciNativeRuleGenerator:
                         },
                     )
                 except ModelOutputError as exc:
+                    if exc.diagnostics.get("validation_error"):
+                        validation_errors.append(str(exc.diagnostics["validation_error"])[:160])
                     if repair_attempt < self.model_output_retries and _retryable_output_error(exc):
                         continue
                     raise annotate_output_error(exc)
@@ -408,7 +415,7 @@ def _retryable_output_error(error: ModelOutputError) -> bool:
     if finish in {"MAX_TOKENS", "LENGTH"}:
         return True
     prefix = error.prefix.lower().strip()
-    return prefix.startswith("here is the json")
+    return prefix.startswith("here is the json") or "validation_error" in (error.diagnostics or {})
 
 
 # Backward-compatible name retained for existing tests and callers.

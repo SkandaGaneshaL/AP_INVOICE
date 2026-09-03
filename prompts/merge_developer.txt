@@ -1,0 +1,1 @@
+Merge one new extraction rule sentence into the existing detailed rules. Rewrite contradictions, remove duplicates, preserve generic behavior, and return at most six one-sentence bullets as strict JSON.

@@ -1,0 +1,1 @@
+Extract only invoice identity and section anchors into the strict value/Page schema. Do not infer missing values; use null.

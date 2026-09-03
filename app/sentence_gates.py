@@ -1,31 +1,29 @@
+"""Small, dependency-free gates for the active LLM-first sentence path."""
+
 from __future__ import annotations
 
-import re
-from typing import Any
+from .models import EvaluationResult, RuleGenerationContext
+from .sentence_validators import validate_sentence
 
 
-def validate_sentence_for_program(sentence: str, program: Any, *, old_value: Any = None, new_value: Any = None,
-                                  existing_text: str = "") -> tuple[bool, list[str]]:
-    reasons: list[str] = []
-    text = (sentence or "").strip()
-    if not text or "{" in text or "}" in text or "```" in text:
-        reasons.append("empty_or_unstructured_sentence")
-    if old_value is not None and str(old_value).strip() and str(old_value).casefold() in text.casefold():
-        reasons.append("old_value_memorized")
-    if new_value is not None and str(new_value).strip() and str(new_value).casefold() in text.casefold():
-        reasons.append("new_value_memorized")
-    ops = {item.op for item in getattr(program, "transform", [])}
-    lowered = text.casefold()
-    if ops.intersection({"numeric_thousands_canonicalize", "money_canonicalize", "parse_money"}) and not any(
-        token in lowered for token in ("number", "separator", "comma", "currency", "grouping")
-    ):
-        reasons.append("money_transform_not_expressed")
-    if ops.intersection({"identifier_strip_leading_alpha", "strip_leading_alpha_token"}) and not any(
-        token in lowered for token in ("leading", "alphabetic", "prefix")
-    ):
-        reasons.append("identifier_transform_not_expressed")
-    if "date_format_repattern" in ops or "parse_date" in ops:
-        target = getattr(getattr(program, "format", None), "target_pattern", None)
-        if target and target.casefold() not in lowered:
-            reasons.append("date_target_pattern_missing")
-    return not reasons, reasons
+def evaluate_sentence_gates(sentence: str, context: RuleGenerationContext) -> EvaluationResult:
+    """Validate a generated sentence without loading extraction/GEPA modules."""
+    try:
+        validate_sentence(sentence, {"old_value": context.old_value, "new_value": context.new_value})
+    except ValueError as exc:
+        return EvaluationResult(score=0.0, confidence="failed", feedback=str(exc),
+                                candidate_status="rejected", promotion_eligible=False,
+                                schema_valid=False)
+    packet = context.feedback_packet
+    supported = packet is None or bool(packet.evidence)
+    return EvaluationResult(
+        score=1.0 if supported else 0.0,
+        confidence="normal" if supported else "failed",
+        feedback=("Sentence passed compact safety and evidence gates." if supported
+                  else "No supporting evidence was available."),
+        field_match=True,
+        evidence_supported=supported,
+        schema_valid=True,
+        candidate_status="evaluated" if supported else "rejected",
+        promotion_eligible=supported,
+    )

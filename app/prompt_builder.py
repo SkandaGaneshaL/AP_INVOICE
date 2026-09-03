@@ -42,32 +42,8 @@ class RulePromptBuilder:
 
     @classmethod
     def normal_payload(cls, context: RuleGenerationContext) -> dict:
-        packet = context.feedback_packet
-        evidence = []
-        competing = []
-        history = []
-        if packet:
-            evidence = [item.model_dump(exclude={"raw_value", "normalized_value"}) for item in packet.evidence[:3]]
-            competing = [item.model_dump(exclude={"raw_value", "normalized_value"}) for item in packet.competing_evidence[:2]]
-            history = [item.model_dump() if hasattr(item, "model_dump") else item for item in packet.historical_examples[:2]]
-        # Keep the provider context field-local. The full invoice and both
-        # complete JSON documents are intentionally not sent to sentence
-        # generation.
-        return {
-            "field_key": context.field_key,
-            "display_label": context.display_label,
-            "existing_rule": context.short_rule,
-            "detailed_rules": context.detailed_rule[:3],
-            "field_path": context.field_path,
-            "correction": {"old": context.old_value, "new": context.new_value,
-                           "edit_script": "structured_value_change"},
-            "evidence_hits": evidence,
-            "competing_hits": competing,
-            "historical_examples": history,
-            "normalization_mode": context.normalization_mode,
-            "constraints": ["Do not hard-code the corrected value.",
-                            "Return reusable extraction behavior only."],
-        }
+        from .sentence_payload import build_sentence_payload
+        return build_sentence_payload(context)
 
     @classmethod
     def seed(cls, context: RuleGenerationContext) -> str:

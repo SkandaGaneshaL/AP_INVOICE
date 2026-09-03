@@ -242,7 +242,12 @@ def render_strategy(strategy, title, key_suffix):
     st.subheader(title)
     st.dataframe(strategy.get("changes", []), width="stretch")
     metadata = strategy.get("metadata") or {}
-    st.json(strategy.get("evaluation") or metadata or {})
+    evaluation = strategy.get("evaluation") or {}
+    if evaluation:
+        st.caption(
+            f"Evaluation: {evaluation.get('candidate_status', 'unavailable')} · "
+            f"score: {_token_display(evaluation.get('score'))}"
+        )
     st.info(f"Persistence: {metadata.get('persistence_status', 'not_persisted')}")
     model = metadata.get("model")
     if model:
@@ -255,14 +260,23 @@ def render_strategy(strategy, title, key_suffix):
         if change.get("generated_sentence"):
             st.markdown(f"**{change.get('FIELD_KEY', 'Field')} instruction**")
             st.write(change["generated_sentence"])
-            with st.expander("Reason", expanded=bool(change.get("reason"))):
-                st.write(change.get("reason") or "Unavailable")
+            st.caption(f"Correction kind: {change.get('correction_kind') or 'not classified'}")
+            st.caption(f"LLM calls: {1 if change.get('oci_request_id') else 0}")
+            reason = change.get("reason")
+            if reason:
+                with st.expander("Business explanation", expanded=True):
+                    st.write(reason)
         elif change.get("status") in {"generation_failed", "unavailable"}:
             reason = change.get("reason", "candidate generation failed")
             st.error(f"{change.get('FIELD_KEY', 'Field')}: {reason}")
         if generation:
-            with st.expander("Generation diagnostics", expanded=True):
-                st.json(generation)
+            with st.expander("Generation diagnostics", expanded=False):
+                st.write({
+                    key: generation.get(key)
+                    for key in ("attempts", "application_output_limit_sent", "provider_managed_limit",
+                                "finish_reasons", "request_ids", "reason")
+                    if key in generation
+                })
                 if generation.get("reason") == "provider_output_truncated_after_repair":
                     st.warning(
                         "OCI reached its provider-managed output limit before returning a complete rule. "

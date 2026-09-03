@@ -9,6 +9,7 @@ from .candidate_binder import bind_field
 from .layout_graph import LayoutGraph
 from .operators import CorrectionExample, FieldProgram
 from .transform_induction import apply_program
+from .sentence_validators import validate_sentence
 
 
 class ExtractionExecutor(Protocol):
@@ -76,6 +77,26 @@ def evaluate_program_counterfactual(program: FieldProgram, raw_evidence_value: A
         == _norm(corrected_value)
         for hit in (competing_hits or [])
     )
+
+
+def evaluate_sentence_gates(sentence: str, context: RuleGenerationContext) -> EvaluationResult:
+    """Cheap text/evidence gate; avoids a second PDF extraction per candidate."""
+    try:
+        payload = {"old_value": context.old_value, "new_value": context.new_value}
+        validate_sentence(sentence, payload)
+    except ValueError as exc:
+        return EvaluationResult(score=0.0, confidence="failed", feedback=str(exc),
+                                 candidate_status="rejected", promotion_eligible=False, schema_valid=False)
+    packet = context.feedback_packet
+    # Legacy callers without a document packet are still valid unit-test and
+    # API integrations; document-backed production candidates require actual
+    # evidence support.
+    supported = packet is None or bool(packet.evidence)
+    return EvaluationResult(score=1.0 if supported else 0.0, confidence="normal" if supported else "failed",
+                            feedback="Sentence passed compact safety and evidence gates." if supported else "No supporting evidence was available.",
+                            field_match=True, evidence_supported=supported, schema_valid=True,
+                            candidate_status="evaluated" if supported else "rejected",
+                            promotion_eligible=supported)
     score = 1.0 if match and supported else 0.0
     return EvaluationResult(
         score=score,
