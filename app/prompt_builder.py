@@ -11,27 +11,12 @@ class RulePromptBuilder:
     def feedback(context: RuleGenerationContext) -> str:
         packet = context.feedback_packet
         if packet:
-            evidence = "\n".join(
-                f"- Page {item.page}: {item.snippet} (label={item.label or 'unknown'}, raw_value={item.raw_value}, "
-                f"normalized_value={item.normalized_value}, transformation={item.transformation or 'none'}, "
-                f"confidence={item.confidence:.2f})"
-                for item in packet.evidence
-            ) or "- No deterministic source evidence was found."
-            competing = "\n".join(
-                f"- Page {item.page}: {item.snippet} (label={item.label or 'unknown'})"
-                for item in packet.competing_evidence
-            ) or "- No competing occurrence was found."
-            examples = "\n".join(
-                f"- {example.input_evidence} -> {example.expected_output}; lesson: {example.rule_lesson}"
-                for example in packet.historical_examples
-            ) or "- No historical demonstrations are available."
             return (
                 f"Observed correction: {packet.observed_correction}\n"
-                f"Evidence found in the current invoice:\n{evidence}\n"
-                f"Competing evidence:\n{competing}\n"
                 f"Generalized extraction intent: {packet.inferred_intent}\n"
-                f"Constraints:\n" + "\n".join(f"- {item}" for item in packet.constraints) +
-                f"\nHistorical demonstrations:\n{examples}"
+                f"Positive label categories: {sorted({item.label for item in packet.evidence if item.label})}\n"
+                f"Negative label categories: {sorted({item.label for item in packet.competing_evidence if item.label})}\n"
+                f"Constraints: {packet.constraints[:4]}"
             )
         return (
             f"Previous extracted value: {context.old_value}\n"
@@ -47,35 +32,7 @@ class RulePromptBuilder:
 
     @classmethod
     def seed(cls, context: RuleGenerationContext) -> str:
-        parts = [
-            context.short_rule,
-            *context.detailed_rule,
-            cls.feedback(context),
-            "Write reusable extraction behavior; preserve existing rules and do not memorize this invoice.",
-        ]
-        return "\n".join(parts).strip()
-
-    @classmethod
-    def gepa_seed(cls, context: RuleGenerationContext) -> str:
-        """Return one compact instruction for GEPA's text component."""
-        if context.field_key.casefold() == "invoicenumber":
-            if context.normalization_mode == "preserve_prefix":
-                return "Extract the invoice number next to the explicit invoice-number label and retain all meaningful leading alphanumeric characters exactly as shown."
-            if context.normalization_mode == "remove_prefix":
-                return "Extract the invoice number next to the explicit invoice-number label and remove leading alphabetic characters only when the remaining portion is a valid numeric invoice number."
-        packet = context.feedback_packet
-        candidates = [
-            context.detailed_rule[0] if context.detailed_rule else "",
-            context.short_rule,
-            packet.inferred_intent if packet else "",
-        ]
-        for candidate in candidates:
-            text = " ".join(str(candidate).strip().split())
-            if text and text[-1] not in ".!?":
-                text += "."
-            if text and text.count(".") <= 1 and "\n" not in text:
-                return text
-        return f"Extract the value for {context.display_label or context.field_key} from its explicit invoice label."
+        return cls.json_text(cls.normal_payload(context))
 
     @staticmethod
     def json_text(value: object) -> str:

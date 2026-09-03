@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import os
+import uuid
+import hashlib
+import json
 
 from .comparator import find_changes
 from .evidence import ExtractionEvidenceBuilder, layout_signature
 from .feedback_repository import FeedbackRepository
-from .merge import append_rule
-from .models import ChangeResult, RuleGenerationContext, StrategyResult, UpdateRequest, UpdateResponse
+from .models import ChangeResult, RuleGenerationContext, StrategyResult, UpdateRequest, UpdateResponse, UsageSummary
 from .normalization import infer_policy
-from .normal_strategy import GeneratedRuleCandidate, GenerativeRuleGenerator
+from .normal_strategy import GeneratedRuleCandidate, GenerativeRuleGenerator, prompt_hash
 from .usage import summarize_usage
 from .model_output import ModelOutputError
 from .sentence_gates import evaluate_sentence_gates
-from .rule_merger import merge_rule_sentences
+from .rule_merger import GeminiRuleMerger, has_semantic_conflict, merge_rule_sentences
 from .sentence_payload import build_sentence_payload
+from .supplier_store import SupplierRuleStore
 
 
 class RuleGenerationError(RuntimeError):
@@ -25,7 +28,7 @@ class RuleGenerationError(RuntimeError):
 
 class UpdateRulesService:
     def __init__(self, generator, repository, audit, feedback_repository=None, document_store=None,
-                 evaluator=None, baseline_instructions=None):
+                 evaluator=None, baseline_instructions=None, supplier_store=None, rule_merger=None):
         self.generator = generator
         self.repository = repository
         self.audit = audit
@@ -33,6 +36,8 @@ class UpdateRulesService:
         self.document_store = document_store
         self.evaluator = evaluator
         self.baseline_instructions = baseline_instructions or {}
+        self.supplier_store = supplier_store or SupplierRuleStore()
+        self.rule_merger = rule_merger
 
     @staticmethod
     def _candidate(generator, context: RuleGenerationContext) -> GeneratedRuleCandidate:
@@ -52,7 +57,17 @@ class UpdateRulesService:
         }
 
     def _context(self, request, rule, change):
-        history = self.feedback.load(rule.FIELD_KEY, request.gepa_history_limit)
+        # Resolve the read path as global rules overlaid by the requested
+        # supplier rule. The repository's global rule object is never mutated
+        # by preview generation.
+        if request.supplier_key:
+            overlay = self.supplier_store.resolve({}, request.supplier_key).get(rule.FIELD_KEY)
+            if isinstance(overlay, dict):
+                from .models import RuleRecord
+                rule = RuleRecord.model_validate({**rule.model_dump(), **overlay})
+        # Feedback is selected across fields by compatible type/correction
+        # metadata; same-field history is only a tie-breaker.
+        history = self.feedback.load_all()
         document = self.document_store.get(request.document_id) if self.document_store and request.document_id else None
         packet = None
         if document:
@@ -67,22 +82,22 @@ class UpdateRulesService:
             )
             current_layout = layout_signature(document.document_bytes)
             history = [{**row, "current_layout_signature": current_layout} for row in history]
-            packet.historical_examples = self.feedback.select_demonstrations(
-                packet, history, request.gepa_history_limit
-            )
+            packet.historical_examples = self.feedback.select_demonstrations(packet, history, min(request.history_limit, 2))
+        else:
+            history = history[-min(max(request.history_limit, 0), 2):]
         context = RuleGenerationContext(field_key=rule.FIELD_KEY, display_label=rule.DISPLAY_LABEL,
             short_rule=rule.SHORT_RULE, detailed_rule=list(rule.DETAILED_RULE), old_value=change.old_value,
             new_value=change.new_value, field_path=change.path, invoice_payload=request.invoice_payload,
-            final_response=request.final_response, historical_examples=history,
+            final_response=request.final_response,
+            historical_examples=[item.model_dump() for item in packet.historical_examples] if packet else history,
             rule_version="v1", extraction_function="OciPdfExtractionExecutor" if document else "unconfigured",
             document_id=document.document_id if document else None, mime_type=document.mime_type if document else "application/pdf",
             document_bytes=document.document_bytes if document else None,
             feedback_packet=packet,
             baseline_instruction=self.baseline_instructions.get(rule.FIELD_KEY),
             normalization_mode=infer_policy(rule.FIELD_KEY, change.old_value, change.new_value).mode,
-            reasoning_effort=request.reasoning_effort, current_program=(
-                FieldProgram.model_validate(rule.PROGRAM) if rule.PROGRAM else None
-            ))
+            reasoning_effort=request.reasoning_effort,
+            current_program=rule.PROGRAM if isinstance(rule.PROGRAM, dict) else None)
         return context
 
     def _run_strategy(self, generator, strategy, request, rules, changes, *, tolerate_failure=False):
@@ -101,9 +116,27 @@ class UpdateRulesService:
                 # The active architecture is intentionally LLM-first. The
                 # legacy deterministic candidate helper remains available for
                 # rollback experiments but is not used in production flow.
-                candidate = self._candidate(generator, context)
+                existing_preview = self.audit.find_preview_by_prompt_hash(prompt_hash(context))
+                if existing_preview and existing_preview.get("generated_sentence"):
+                    candidate = GeneratedRuleCandidate(
+                        sentence=existing_preview["generated_sentence"], strategy=strategy,
+                        request_id=existing_preview.get("oci_request_id"),
+                        candidate_id=existing_preview.get("candidate_id") or str(uuid.uuid4()),
+                        prompt_hash=prompt_hash(context),
+                        reason=existing_preview.get("metadata", {}).get("reason"),
+                        metadata=dict(existing_preview.get("metadata") or {}),
+                        # Reusing a preview is not a new OCI call. Keep any
+                        # historical usage in the audit record, but report
+                        # current-job usage as zero.
+                        usage=UsageSummary(),
+                    )
+                    candidate.metadata["idempotent_reuse"] = True
+                    candidate.metadata["oci_calls"] = 0
+                else:
+                    candidate = self._candidate(generator, context)
                 if not candidate.sentence:
                     raise ValueError("strategy produced an empty rule sentence")
+                sentence_payload = build_sentence_payload(context)
                 if os.getenv("FULL_GOLD_EVAL", "false").lower() == "true" and self.evaluator and context.document_bytes:
                     candidate.evaluation, _ = self.evaluator.evaluate(context, candidate.sentence)
                 else:
@@ -112,8 +145,15 @@ class UpdateRulesService:
                 added = False
                 if not rejected:
                     before_rules = list(rule.DETAILED_RULE)
-                    merged = merge_rule_sentences(before_rules, candidate.sentence)
+                    if has_semantic_conflict(before_rules, candidate.sentence):
+                        merged = (self.rule_merger or GeminiRuleMerger()).merge(
+                            context, candidate.sentence, candidate.metadata.get("correction_kind", "value_replacement")
+                        )
+                    else:
+                        merged = merge_rule_sentences(before_rules, candidate.sentence)
                     rule.DETAILED_RULE = merged.updated_detailed_rule
+                    if merged.short_rule:
+                        rule.SHORT_RULE = merged.short_rule
                     if candidate.metadata.get("program"):
                         rule.PROGRAM = candidate.metadata["program"]
                     added = candidate.sentence.casefold() not in {item.casefold() for item in before_rules}
@@ -122,6 +162,7 @@ class UpdateRulesService:
                         "after": merged.updated_detailed_rule,
                         "dropped_bullets": merged.dropped_bullets,
                         "conflict_resolved": merged.conflict_resolved,
+                        "short_rule": merged.short_rule,
                     }
                 result = ChangeResult(ID=rule.ID, FIELD_KEY=rule.FIELD_KEY, path=change.path,
                     old_value=change.old_value, new_value=change.new_value,
@@ -140,10 +181,43 @@ class UpdateRulesService:
                 result.visible_reasoning = bool(candidate.metadata.get("visible_reasoning", False))
                 result.decision_summary = candidate.metadata.get("decision_summary")
                 result.reason = candidate.metadata.get("reason") or result.decision_summary
-                result.correction_kind = candidate.metadata.get("correction_kind")
+                # The correction kind is an immutable service-side fact from
+                # the structured delta, never a model-provided label.
+                result.correction_kind = sentence_payload["correction_kind"]
+                result.observed_correction = sentence_payload["delta"]["observed_change"]
+                intent = candidate.metadata.get("intent")
+                if isinstance(intent, dict):
+                    from .models import CorrectionIntent
+                    try:
+                        intent = CorrectionIntent.model_validate(intent)
+                    except Exception:
+                        intent = None
+                result.intent = intent
+                result.correction_intent = result.intent
+                result.oci_calls = int(candidate.metadata.get("oci_calls", candidate.usage.calls or (1 if candidate.request_id else 0)))
+                if rejected:
+                    result.rejection_reason = candidate.evaluation.feedback if candidate.evaluation else "candidate rejected"
+                result.reason_basis = ["current_rule", "corrected_field_behavior", "correction_policy"]
+                if context.feedback_packet and context.feedback_packet.evidence:
+                    result.reason_basis.append("matched_labeled_evidence")
+                if context.feedback_packet and context.feedback_packet.competing_evidence:
+                    result.reason_basis.append("competing_evidence_rejected")
+                result.evidence = context.feedback_packet.evidence if context.feedback_packet else []
+                result.competing_evidence = context.feedback_packet.competing_evidence if context.feedback_packet else []
+                result.evidence_status = (
+                    "supported" if result.evidence else
+                    "ambiguous" if result.competing_evidence else
+                    "unavailable"
+                )
+                result.rule_diff = candidate.metadata.get("rule_diff", {})
                 candidate.metadata["would_add_rule"] = added
-                candidate.metadata["sentence_payload"] = build_sentence_payload(context)
-                candidate.metadata["correction_kind"] = candidate.metadata["sentence_payload"]["correction_kind"]
+                candidate.metadata["sentence_payload"] = sentence_payload
+                candidate.metadata["correction_kind"] = sentence_payload["correction_kind"]
+                candidate.metadata["intent"] = result.intent.model_dump() if result.intent else None
+                candidate.metadata["correction_intent"] = result.intent.model_dump() if result.intent else None
+                candidate.metadata["reason_basis"] = list(result.reason_basis)
+                candidate.metadata["supplier_key"] = request.supplier_key
+                candidate.metadata["promotion_scope"] = "supplier" if request.supplier_key else "global_compatibility"
                 candidate.metadata["usage"] = candidate.usage.model_dump()
                 candidate.metadata["rule_version"] = context.rule_version
                 candidate.metadata["persistence_status"] = result.persistence_status
@@ -182,7 +256,11 @@ class UpdateRulesService:
                                  "RULE_GENERATION_FAILED"),
                         "message": str(exc),
                     },
-                    generation=generation)
+                    generation=generation,
+                    oci_calls=int(generation.get("attempts", 0) or 0),
+                    rejection_reason=("provider_output_truncated" if truncated else
+                                      "provider_error" if not validation_failed else
+                                      "sentence_validation_failed"))
                 results.append(result)
                 if not tolerate_failure:
                     raise RuleGenerationError(
@@ -211,17 +289,23 @@ class UpdateRulesService:
             packet = context.feedback_packet
             if not packet:
                 continue
+            def fingerprint(value):
+                return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()[:16]
             self.feedback.append({
                 "field_key": packet.field_key,
+                "field_type": "list" if isinstance(packet.previous_value, list) else "scalar",
                 "failure_type": packet.failure_type,
-                "input_evidence": packet.evidence[0].model_dump() if packet.evidence else {},
-                "expected_output": {"value": packet.corrected_value},
-                "rule_lesson": packet.inferred_intent,
-                "source": "current_document",
-                "status": result.status,
+                "old_value_fingerprint": fingerprint(packet.previous_value),
+                "new_value_fingerprint": fingerprint(packet.corrected_value),
+                "label_text": ", ".join(sorted({str(item.label) for item in packet.evidence if item.label}))[:160],
+                "selected_sentence": result.generated_sentence,
+                "rule_diff": (result.rule_diff or {}),
+                "promotion_status": result.persistence_status,
+                "token_metrics": result.usage.model_dump() if result.usage else {},
+                "timestamp": __import__("time").time(),
             })
 
-    def update(self, request: UpdateRequest, generators=None) -> UpdateResponse:
+    def update(self, request: UpdateRequest) -> UpdateResponse:
         rules = self.repository.load()
         changes = find_changes(request.invoice_payload, request.final_response)
         normal_rules, normal_changes, normal_candidates = self._run_strategy(
@@ -238,23 +322,6 @@ class UpdateRulesService:
             metadata={"status": "completed", "candidate_count": len(normal_candidates),
                       "selected_for_persistence": False, "persistence_status": "awaiting_approval",
                       "requires_user_approval": True})]
-
-        if generators is not None:
-            gepa_rules, gepa_changes, gepa_candidates = self._run_strategy(
-                generators, "gepa", request, rules, changes, tolerate_failure=True)
-            gepa_summary = self._summary(gepa_changes)
-            if not request.dry_run:
-                self._audit_candidates(gepa_candidates, selected=False)
-            aggregate = [c.evaluation for c, _, _ in gepa_candidates if c.evaluation]
-            evaluation = aggregate[0] if len(aggregate) == 1 else None
-            strategies.append(StrategyResult(strategy="gepa", updated_rules=gepa_rules,
-                changes=gepa_changes, summary=gepa_summary, evaluation=evaluation,
-                metadata={"candidate_count": len(gepa_candidates), "selected_for_persistence": False,
-                          "persistence_status": "awaiting_approval", "requires_user_approval": True,
-                          "promotion_eligible": False if len(aggregate) <= 1 else True,
-                          "evidence_supported": any(c.evaluation and c.evaluation.score is not None and c.evaluation.score >= .75 for c, _, _ in gepa_candidates),
-                          "confidence": evaluation.confidence if evaluation else "unavailable",
-                          "demonstrations_used": sum(len(ctx.feedback_packet.historical_examples) for _, ctx, _ in gepa_candidates if ctx.feedback_packet)}))
 
         return UpdateResponse(strategies=strategies, updated_rules=normal_rules,
                               changes=normal_changes, summary=normal_summary)
@@ -280,53 +347,15 @@ class UpdateRulesService:
             },
             usage=summarize_usage([candidate.usage for candidate, _, _ in candidates]),
         )
+        result.sentence_generation_usage = result.usage
         return result, candidates
 
-    def run_gepa_only(self, request: UpdateRequest, original_rules, generator) -> StrategyResult:
-        """Run the review-only GEPA branch against an immutable rule snapshot."""
-        changes = find_changes(request.invoice_payload, request.final_response)
-        gepa_rules, gepa_changes, gepa_candidates = self._run_strategy(
-            generator, "gepa", request, original_rules, changes, tolerate_failure=True
-        )
-        if not request.dry_run:
-            self._audit_candidates(gepa_candidates, selected=False)
-        aggregate = [candidate.evaluation for candidate, _, _ in gepa_candidates if candidate.evaluation]
-        evaluation = aggregate[0] if len(aggregate) == 1 else None
-        return StrategyResult(
-            strategy="gepa",
-            updated_rules=gepa_rules,
-            changes=gepa_changes,
-            summary=self._summary(gepa_changes),
-            evaluation=evaluation,
-            metadata={
-                "status": "completed",
-                "candidate_count": len(gepa_candidates),
-                "selected_for_persistence": False,
-                "persistence_status": "awaiting_approval",
-                "requires_user_approval": True,
-                "promotion_eligible": False if len(aggregate) <= 1 else True,
-                "evidence_supported": any(
-                    c.evaluation and c.evaluation.score is not None and c.evaluation.score >= .75
-                    for c, _, _ in gepa_candidates
-                ),
-                "confidence": evaluation.confidence if evaluation else "unavailable",
-                "demonstrations_used": sum(
-                    len(ctx.feedback_packet.historical_examples)
-                    for _, ctx, _ in gepa_candidates if ctx.feedback_packet
-                ),
-            },
-            usage=summarize_usage([candidate.usage for candidate, _, _ in gepa_candidates]),
-        )
-
-    def promote(self, candidate_id: str, expected_rule_version: str = "v1", dry_run: bool = False):
-        from .merge import append_rule
+    def promote(self, candidate_id: str, expected_rule_version: str = "v1", dry_run: bool = False,
+                promotion_scope: str = "supplier", supplier_key: str | None = None):
         from .models import PromoteResponse
         record = self.audit.find_candidate(candidate_id)
         if not record:
             return PromoteResponse(candidate_id=candidate_id, status="not_found", reason="candidate was not found")
-        if record.get("strategy") == "gepa":
-            return PromoteResponse(candidate_id=candidate_id, status="rejected", code="GEPA_DISABLED",
-                                   reason="GEPA candidates cannot be promoted because GEPA is detached")
         if record.get("strategy") != "generative":
             return PromoteResponse(candidate_id=candidate_id, status="rejected", reason="unsupported candidate strategy")
         if record.get("promotion_status") == "promoted":
@@ -355,9 +384,30 @@ class UpdateRulesService:
         if not metadata.get("promotion_eligible", False):
             return PromoteResponse(candidate_id=candidate_id, status="rejected",
                                    reason="candidate did not pass evaluation or promotion gates")
-        append_rule(rule, sentence)
+        scope = (promotion_scope or "supplier").strip().lower()
+        if scope not in {"supplier", "global"}:
+            return PromoteResponse(candidate_id=candidate_id, status="rejected", reason="invalid promotion scope")
+        target_supplier = supplier_key or metadata.get("supplier_key")
+        if scope == "supplier" and not target_supplier:
+            # Preserve compatibility for older clients that did not submit a
+            # supplier identity; new clients should always provide one.
+            scope = "global"
+        # Apply the validated preview diff exactly once. Re-running the old
+        # append operation here duplicated the generated sentence and could
+        # discard conflict removals made during preview.
+        diff_after = (metadata.get("rule_diff") or {}).get("after")
+        if isinstance(diff_after, list):
+            rule.DETAILED_RULE = [str(item) for item in diff_after]
+        elif sentence.casefold() not in {item.casefold() for item in rule.DETAILED_RULE}:
+            rule.DETAILED_RULE.append(sentence)
+        short_rule = (metadata.get("rule_diff") or {}).get("short_rule")
+        if short_rule:
+            rule.SHORT_RULE = str(short_rule)
         if not dry_run:
-            self.repository.save(rules)
+            if scope == "supplier":
+                self.supplier_store.save_field(target_supplier, rule.FIELD_KEY, rule.model_dump())
+            else:
+                self.repository.save(rules)
             self.audit.append(rule_id=record.get("ID"), field_key=record.get("FIELD_KEY"), path=record.get("path", ""),
                 old_value=None, new_value=None, sentence=sentence, status="promoted", request_id=record.get("oci_request_id"),
                 strategy=record.get("strategy", "generative"), selected_for_persistence=True, promotion_status="promoted", candidate_id=candidate_id,
@@ -375,6 +425,9 @@ class UpdateRulesService:
             return PromoteBatchResponse(status="rejected", reason="duplicate candidate IDs are not allowed")
         if request.expected_rule_version != "v1":
             return PromoteBatchResponse(status="rejected", reason="rule version mismatch")
+        scope = (request.promotion_scope or "supplier").strip().lower()
+        if scope not in {"supplier", "global"}:
+            return PromoteBatchResponse(status="rejected", reason="invalid promotion scope")
 
         records = [self.audit.find_candidate(candidate_id) for candidate_id in candidate_ids]
         if any(record is None for record in records):
@@ -388,9 +441,7 @@ class UpdateRulesService:
         validation_errors = []
         for record in records:
             metadata = record.get("metadata") or {}
-            if record.get("strategy") == "gepa":
-                validation_errors.append("GEPA candidates cannot be promoted because GEPA is detached")
-            elif record.get("strategy") != "generative":
+            if record.get("strategy") != "generative":
                 validation_errors.append("unsupported strategy")
             if record.get("promotion_status") == "promoted":
                 validation_errors.append(f"candidate {record.get('candidate_id')} was already promoted")
@@ -409,11 +460,19 @@ class UpdateRulesService:
             if metadata.get("rule_version", "v1") != request.expected_rule_version:
                 validation_errors.append(f"candidate {record.get('candidate_id')} is stale")
         if validation_errors:
-            code = "GEPA_DISABLED" if any("GEPA candidates" in error for error in validation_errors) else None
-            return PromoteBatchResponse(status="rejected", code=code, reason="; ".join(validation_errors))
+            return PromoteBatchResponse(status="rejected", reason="; ".join(validation_errors))
 
         for record in records:
-            append_rule(rule_by_id[str(record.get("ID"))], record["generated_sentence"])
+            rule = rule_by_id[str(record.get("ID"))]
+            metadata = record.get("metadata") or {}
+            diff_after = (metadata.get("rule_diff") or {}).get("after")
+            if isinstance(diff_after, list):
+                rule.DETAILED_RULE = [str(item) for item in diff_after]
+            elif record["generated_sentence"].casefold() not in {item.casefold() for item in rule.DETAILED_RULE}:
+                rule.DETAILED_RULE.append(record["generated_sentence"])
+            short_rule = (metadata.get("rule_diff") or {}).get("short_rule")
+            if short_rule:
+                rule.SHORT_RULE = str(short_rule)
         if request.dry_run:
             return PromoteBatchResponse(
                 status="valid", rule_version=request.expected_rule_version,
@@ -421,7 +480,18 @@ class UpdateRulesService:
                 backup_created=False,
             )
 
-        self.repository.save(rules)
+        target_supplier = request.supplier_key or (records[0].get("metadata") or {}).get("supplier_key")
+        if scope == "supplier" and not target_supplier:
+            scope = "global"
+        if scope == "supplier":
+            for record in records:
+                self.supplier_store.save_field(
+                    target_supplier,
+                    record["FIELD_KEY"],
+                    rule_by_id[str(record.get("ID"))].model_dump(),
+                )
+        else:
+            self.repository.save(rules)
         promoted = []
         for record in records:
             self.audit.append(rule_id=record.get("ID"), field_key=record.get("FIELD_KEY"), path=record.get("path", ""),

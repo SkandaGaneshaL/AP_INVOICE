@@ -28,3 +28,10 @@ class SupplierRuleStore:
         for field, value in self.load(key).items():
             merged[field] = {**(merged.get(field) or {}), **(value or {})} if isinstance(value, dict) else value
         return merged
+
+    def save_field(self, key: str, field_key: str, rule: dict[str, Any]) -> None:
+        """Persist only an explicitly promoted supplier overlay."""
+        path = self.root / f"{supplier_key(key)}.json"
+        current = self.load(key)
+        current[field_key] = rule
+        path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

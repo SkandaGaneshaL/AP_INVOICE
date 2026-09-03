@@ -14,19 +14,18 @@ class _UpdateJob:
     status: str = "queued"
     phase: str = "queued"
     normal_status: str = "queued"
-    gepa_status: str = "disabled"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     progress: dict[str, Any] = field(default_factory=dict)
     normal_result: Any = None
     requested_config: dict[str, Any] = field(default_factory=dict)
     effective_config: dict[str, Any] = field(default_factory=lambda: {
-        "gepa_enabled": False,
-        "reason": "GEPA is detached from the active application",
+        "reason": "Normal LLM-first correction path",
     })
     usage: dict[str, Any] = field(default_factory=dict)
     sentence_generation_usage: dict[str, Any] | None = None
     extraction_usage: dict[str, Any] | None = None
+    rule_merge_usage: dict[str, Any] | None = None
     termination: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] | None = None
     requested_model: str = "gpt-oss-20b"
@@ -137,8 +136,7 @@ class RuleUpdateJobStore:
                 progress=dict(progress or {}),
                 requested_config=dict(requested_config or {}),
                 effective_config=dict(effective_config or {
-                    "gepa_enabled": False,
-                    "reason": "GEPA is detached from the active application",
+                    "reason": "Normal LLM-first correction path",
                 }),
                 requested_model=requested_model,
                 effective_model=effective_model,
@@ -179,7 +177,10 @@ class RuleUpdateJobStore:
             if isinstance(result, dict):
                 metadata = result.get("metadata") or {}
                 job.oci_sentence_generation_called = bool(metadata.get("oci_sentence_generation_called", job.oci_sentence_generation_called))
-                job.oci_sentence_generation_call_count = int(metadata.get("oci_sentence_generation_call_count", job.oci_sentence_generation_call_count))
+                job.oci_sentence_generation_call_count = max(
+                    job.oci_sentence_generation_call_count,
+                    int(metadata.get("oci_sentence_generation_call_count", 0)),
+                )
                 if metadata.get("reasoning"):
                     job.reasoning = dict(metadata["reasoning"])
             job.updated_at = time.time()
@@ -193,7 +194,7 @@ class RuleUpdateJobStore:
                         "effective_effort": change.get("reasoning_effort_effective"),
                         "supported": change.get("reasoning_supported", False),
                         "hidden_reasoning_exposed": False,
-                        "reasoning_mode": "safe_decision_summary" if change.get("reasoning_supported") else "not_available",
+                        "reasoning_mode": "correction_intent" if change.get("reasoning_supported") else "not_available",
                     },
                 }
                 self.publish(job_id, "field_generation_completed", field_event)
@@ -211,9 +212,8 @@ class RuleUpdateJobStore:
             job.status = "completed"
             job.phase = "normal_completed"
             job.normal_status = "completed"
-            job.gepa_status = "disabled"
             job.normal_result = result
-            job.termination = dict(termination or {"reason": "gepa_disabled"})
+            job.termination = dict(termination or {"reason": "normal_generation_completed"})
             if usage is not None:
                 # Keep the legacy aggregate shape stable while exposing the
                 # convenient sentence_generation_usage alias separately.
@@ -228,7 +228,10 @@ class RuleUpdateJobStore:
             if isinstance(result, dict):
                 metadata = result.get("metadata") or {}
                 job.oci_sentence_generation_called = bool(metadata.get("oci_sentence_generation_called", job.oci_sentence_generation_called))
-                job.oci_sentence_generation_call_count = int(metadata.get("oci_sentence_generation_call_count", job.oci_sentence_generation_call_count))
+                job.oci_sentence_generation_call_count = max(
+                    job.oci_sentence_generation_call_count,
+                    int(metadata.get("oci_sentence_generation_call_count", 0)),
+                )
             job.updated_at = time.time()
             self.publish(job_id, "completed", {"status": "completed"})
 
@@ -238,7 +241,6 @@ class RuleUpdateJobStore:
             job.status = "failed"
             job.phase = "failed"
             job.normal_status = "failed" if job.normal_status != "completed" else job.normal_status
-            job.gepa_status = "disabled"
             job.error = dict(error)
             job.updated_at = time.time()
             self.publish(job_id, "generation_failed", {"status": "failed", "error": error})
@@ -252,9 +254,7 @@ class RuleUpdateJobStore:
                 "status": job.status,
                 "phase": job.phase,
                 "normal_status": job.normal_status,
-                "gepa_status": job.gepa_status,
                 "normal_result": job.normal_result,
-                "gepa_result": None,
                 "progress": dict(job.progress),
                 "requested_config": dict(job.requested_config),
                 "effective_config": dict(job.effective_config),
@@ -262,6 +262,7 @@ class RuleUpdateJobStore:
                 "usage": dict(job.usage),
                 "sentence_generation_usage": dict(job.sentence_generation_usage) if job.sentence_generation_usage else None,
                 "extraction_usage": dict(job.extraction_usage) if job.extraction_usage else None,
+                "rule_merge_usage": dict(job.rule_merge_usage) if job.rule_merge_usage else None,
                 "error": dict(job.error) if job.error else None,
                 "requested_model": job.requested_model,
                 "effective_model": job.effective_model,

@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
-from .transform_induction import induce_transforms
-from .type_inference import infer_type, InferredType
 
 
 @dataclass(frozen=True)
@@ -15,16 +13,11 @@ class NormalizationPolicy:
 
 def infer_policy(field_key: str, old_value: Any, new_value: Any) -> NormalizationPolicy:
     """Infer a generic policy from the typed edit, never from a field name."""
-    inferred = infer_type(old_value, new_value, field_key)
-    candidates = induce_transforms(old_value, new_value, inferred)
-    if candidates:
-        op = candidates[0].program.transform[0].op
-        if op == "strip_leading_alpha_token":
-            return NormalizationPolicy(field_key, "strip_leading_alpha_token")
-        if op == "parse_date":
-            return NormalizationPolicy(field_key, "parse_date")
-        if op == "parse_money":
-            return NormalizationPolicy(field_key, "parse_money")
+    old, new = str(old_value or ""), str(new_value or "")
+    if re.fullmatch(r"[A-Za-z]+(?:[- ]+)[A-Za-z0-9-]+", old) and re.fullmatch(r"[A-Za-z0-9-]+", new) and old.split()[-1] == new:
+        return NormalizationPolicy(field_key, "strip_leading_alpha_token")
+    if re.fullmatch(r"[\d\s,.'$€£₹-]+", old) and re.fullmatch(r"[\d\s,.'$€£₹-]+", new):
+        return NormalizationPolicy(field_key, "parse_money")
     return NormalizationPolicy(field_key)
 
 

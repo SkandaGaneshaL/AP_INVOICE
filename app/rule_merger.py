@@ -9,6 +9,31 @@ class RuleMergeResult(BaseModel):
     updated_detailed_rule: list[str] = Field(default_factory=list, max_length=6)
     dropped_bullets: list[str] = Field(default_factory=list, max_length=6)
     conflict_resolved: bool = False
+    short_rule: str | None = None
+
+
+def has_semantic_conflict(existing: list[str], new_sentence: str) -> bool:
+    """Cheap gate used to avoid a second model call for compatible prose."""
+    incoming_terms = _concept_terms(new_sentence)
+    return any(_conflicts(item, incoming_terms) for item in existing)
+
+
+class GeminiRuleMerger:
+    """Validated optional merger interface; callers inject the Gemini client.
+
+    The active service uses the local bounded merger when no Gemini merger is
+    configured. This keeps conflict resolution explicit and preview-only.
+    """
+    def __init__(self, generator=None):
+        self.generator = generator
+
+    def merge(self, context: Any, new_sentence: str, correction_kind: str) -> RuleMergeResult:
+        if self.generator is None:
+            return merge_rule_sentences(context.detailed_rule, new_sentence)
+        result = self.generator(context=context, new_sentence=new_sentence, correction_kind=correction_kind)
+        if isinstance(result, RuleMergeResult):
+            return result
+        return RuleMergeResult.model_validate(result)
 
 
 def merge_rule_sentences(existing: list[str], new_sentence: str, *, max_rules: int = 6) -> RuleMergeResult:
@@ -39,8 +64,9 @@ def merge_rule_sentences(existing: list[str], new_sentence: str, *, max_rules: i
     overflow = values[:-max_rules] if len(values) > max_rules else []
     if overflow:
         dropped.extend(overflow)
-    return RuleMergeResult(updated_detailed_rule=values[-max_rules:], dropped_bullets=dropped,
-                           conflict_resolved=bool(dropped))
+    updated = values[-max_rules:]
+    return RuleMergeResult(updated_detailed_rule=updated, dropped_bullets=dropped,
+                           conflict_resolved=bool(dropped), short_rule=incoming or None)
 
 
 def _concept_terms(text: str) -> set[str]:

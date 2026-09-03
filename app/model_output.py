@@ -193,3 +193,33 @@ def parse_rule_parts_with_summary(
         reason = "all text parts failed rule-output validation"
     raise ModelOutputError(reason, finish_reason=finish_reason,
                            diagnostics={**(diagnostics or {}), "part_errors": errors})
+
+
+def parse_correction_intent_response(parts: list[Any], *, finish_reason: str | None = None):
+    """Parse the bounded CorrectionIntent contract, ignoring private thought parts."""
+    if str(finish_reason or "").upper() in {"MAX_TOKENS", "LENGTH"}:
+        raise ModelOutputError("model output was truncated by the token limit", finish_reason=finish_reason)
+    candidates = []
+    for part in parts:
+        text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+        thought = bool(part.get("thought", False) if isinstance(part, dict) else getattr(part, "thought", False))
+        if isinstance(text, str) and text.strip() and not thought:
+            candidates.append(text.strip())
+    for text in reversed(candidates):
+        try:
+            value = json.loads(_strip_fence(text))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(value, dict) or not isinstance(value.get("sentence"), str):
+            continue
+        try:
+            from .models import CorrectionIntent
+            allowed = {"noop", "behavior", "label_policy", "transform_policy", "null_policy", "scope", "sentence"}
+            value = {key: item for key, item in value.items() if key in allowed}
+            return CorrectionIntent.model_validate(value), "correction_intent_json"
+        except Exception:
+            continue
+    # Backward-compatible fake providers may still return sentence-only JSON.
+    sentence, format_used = parse_rule_parts(candidates and [{"text": candidates[-1]}] or [], finish_reason=finish_reason)
+    from .models import CorrectionIntent
+    return CorrectionIntent(sentence=sentence), format_used

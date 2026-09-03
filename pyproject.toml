@@ -21,7 +21,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
-gepa = ["gepa>=0.1.1,<0.2"]
 
 [tool.uv]
 default-groups = ["dev"]

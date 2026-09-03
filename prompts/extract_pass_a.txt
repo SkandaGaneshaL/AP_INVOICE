@@ -1,1 +1,1 @@
-Extract only invoice identity and section anchors into the strict value/Page schema. Do not infer missing values; use null.
+Pass A — identity and header anchors. Extract only vendor, invoice number/date, currency, invoice type, buyer, and address anchors. Return strict JSON where every scalar is {"value": ..., "Page": ...}. Do not infer missing values; use {"value": null, "Page": null}. Do not return provenance fields or extra keys.

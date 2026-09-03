@@ -3,7 +3,15 @@ from __future__ import annotations
 import hashlib
 import re
 from typing import Any
-from .type_inference import parse_date, parse_number
+def parse_number(value):
+    try:
+        return float(str(value).replace(",", "").replace("$", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+def parse_date(value):
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}", text) else None
 
 from .models import EvidenceMatch, RuleFeedbackPacket, RuleRecord
 

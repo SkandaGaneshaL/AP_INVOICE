@@ -1,0 +1,268 @@
+https://github.com/NirDiamant/RAG_Techniques
+https://github.com/NirDiamant/GenAI_Agents
+https://github.com/shubhamsaboo/awesome-llm-apps
+https://github.com/Hannibal046/Awesome-LLM
+https://www.promptingguide.ai/
+https://huggingface.co/papers
+https://www.anthropic.com/engineering
+https://applied-llms.org/
+https://github.com/tensorchord/Awesome-LLMOps
+https://lilianweng.github.io/posts/2023-06-23-agent/
+https://github.com/jxzhangjhu/Awesome-LLM-RAG
+https://github.com/Danielskry/Awesome-RAG
+https://github.com/dair-ai/Prompt-Engineering-Guide
+https://github.com/dave-nachman/awesome-ai-engineering
+https://github.com/EthicalML/awesome-production-machine-learning
+https://github.com/currentslab/awesome-vector-search
+https://github.com/e2b-dev/awesome-ai-agents
+https://github.com/weitianxin/Awesome-Agentic-Reasoning
+https://github.com/YunjiaXi/Awesome-Search-Agent-Papers
+https://github.com/NirDiamant/Controllable-RAG-Agent
+https://huggingface.co/blog
+https://paperswithcode.com/
+https://www.semanticscholar.org/
+https://aclanthology.org/
+https://arxiv.org/list/cs.CL/recent
+https://arxiv.org/abs/1706.03762
+https://arxiv.org/abs/2005.11401
+https://arxiv.org/abs/2312.10997
+https://arxiv.org/abs/2201.11903
+https://arxiv.org/abs/2203.11171
+https://arxiv.org/abs/2305.10601
+https://arxiv.org/abs/2210.03629
+https://react-lm.github.io/
+https://arxiv.org/abs/2302.04761
+https://arxiv.org/abs/2303.11366
+https://arxiv.org/abs/2205.10625
+https://arxiv.org/abs/2212.10496
+https://arxiv.org/abs/2310.11511
+https://arxiv.org/abs/2401.15884
+https://arxiv.org/abs/2401.18059
+https://arxiv.org/abs/2404.16130
+https://arxiv.org/abs/2501.09136
+https://arxiv.org/abs/2004.12832
+https://arxiv.org/abs/1603.09320
+https://arxiv.org/abs/2106.09685
+https://arxiv.org/abs/2305.14314
+https://arxiv.org/abs/2101.00190
+https://arxiv.org/abs/2203.02155
+https://arxiv.org/abs/2212.08073
+https://arxiv.org/abs/2305.18290
+https://arxiv.org/abs/2501.12948
+https://arxiv.org/abs/2205.14135
+https://arxiv.org/abs/2309.06180
+https://arxiv.org/abs/2211.17192
+https://arxiv.org/abs/2310.08560
+https://arxiv.org/abs/2304.03442
+https://arxiv.org/abs/2503.12434
+https://www.anthropic.com/engineering/building-effective-agents
+https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
+https://www.anthropic.com/engineering/writing-tools-for-agents
+https://www.anthropic.com/engineering/built-multi-agent-research-system
+https://www.anthropic.com/research
+https://github.com/openai/openai-cookbook
+https://platform.openai.com/docs/guides/function-calling
+https://platform.openai.com/docs/guides/structured-outputs
+https://openai.github.io/openai-agents-python/
+https://ai.google.dev/gemini-api/docs/function-calling
+https://github.com/google-gemini/cookbook
+https://deepmind.google/discover/blog/
+https://ai.meta.com/blog/
+https://github.com/facebookresearch/faiss
+https://github.com/microsoft/graphrag
+https://microsoft.github.io/graphrag/
+https://www.microsoft.com/en-us/research/blog/
+https://modelcontextprotocol.io/
+https://huyenchip.com/2025/01/07/agents.html
+https://huyenchip.com/
+https://eugeneyan.com/writing/llm-patterns/
+https://eugeneyan.com/writing/eval-process/
+https://hamel.dev/blog/posts/evals/
+https://hamel.dev/blog/posts/field-guide/
+https://jxnl.co/writing/2024/05/22/systematically-improving-your-rag/
+https://simonwillison.net/
+https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/
+https://lilianweng.github.io/posts/2023-03-15-prompt-engineering/
+https://sebastianraschka.com/blog/
+https://blog.langchain.com/context-engineering-for-agents/
+https://www.honeycomb.io/blog/hard-stuff-nobody-talks-about-llm
+https://github.com/langchain-ai/langgraph
+https://docs.llamaindex.ai/
+https://docs.haystack.deepset.ai/
+https://dspy.ai/
+https://huggingface.co/docs/peft
+https://huggingface.co/docs/trl
+https://python.useinstructor.com/
+https://github.com/dottxt-ai/outlines
+https://docs.vllm.ai/
+https://github.com/sgl-project/sglang
+https://docs.ragas.io/
+https://github.com/confident-ai/deepeval
+https://www.pinecone.io/learn/
+https://qdrant.tech/articles/
+https://weaviate.io/blog
+https://github.com/stanford-futuredata/ColBERT
+https://github.com/naver/splade
+https://www.sbert.net/
+https://huggingface.co/spaces/mteb/leaderboard
+https://learn.microsoft.com/en-us/azure/search/hybrid-search-ranking
+https://github.com/NVIDIA/TensorRT-LLM
+https://github.com/ggerganov/llama.cpp
+https://github.com/unslothai/unsloth
+https://docs.litellm.ai/
+https://docs.smith.langchain.com/
+https://langfuse.com/docs
+https://docs.arize.com/phoenix
+https://www.promptfoo.dev/docs/
+https://github.com/Giskard-AI/giskard
+https://docs.letta.com/
+https://microsoft.github.io/autogen/
+https://docs.crewai.com/
+https://huggingface.co/docs/smolagents
+https://ai.pydantic.dev/
+https://lmarena.ai/
+https://www.swebench.com/
+https://crfm.stanford.edu/helm/
+https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard
+https://www.latent.space/
+https://www.interconnects.ai/
+https://magazine.sebastianraschka.com/
+https://importai.substack.com/
+https://karpathy.github.io/
+https://github.com/karpathy/nanoGPT
+https://www.reddit.com/r/LLMDevs/
+https://www.reddit.com/r/Rag/
+https://www.reddit.com/r/LocalLLaMA/
+https://www.reddit.com/r/MachineLearning/
+https://www.reddit.com/r/LangChain/
+https://x.com/karpathy
+https://x.com/simonw
+https://x.com/swyx
+https://x.com/jxnlco
+https://x.com/HamelHusain
+https://x.com/chipro
+https://x.com/rasbt
+https://x.com/natolambert
+https://x.com/lilianweng
+https://x.com/_akhaliq
+https://github.com/donnemartin/system-design-primer
+https://platform.claude.com/cookbook/
+https://github.com/anthropics/claude-cookbooks
+https://github.com/google-gemini/cookbook
+https://huggingface.co/learn/deep-rl-course
+https://huggingface.co/learn/agents-course
+https://cohere.com/llmu
+https://docs.cohere.com/docs/llmu-2
+https://learn.microsoft.com/en-us/semantic-kernel/
+https://aws.amazon.com/architecture/
+https://aws.amazon.com/blogs/architecture/announcing-the-aws-well-architected-generative-ai-lens/
+https://qdrant.tech/articles/
+https://milvus.io/bootcamp
+https://github.com/milvus-io/bootcamp
+https://milvus.io/blog
+https://academy.weaviate.io/
+https://academy.weaviate.io/paths
+https://news.ycombinator.com/
+https://towardsdatascience.com/
+https://www.kdnuggets.com/
+https://airflow.apache.org/docs/
+https://airflow.apache.org/docs/apache-airflow/stable/
+https://docs.temporal.io/
+https://blog.logrocket.com/
+https://blog.logrocket.com/tag/ai/
+https://www.oreilly.com/radar/
+https://www.datacamp.com/
+
+
+Bookmark these 10 first. They fan out into almost everything else:
+
+#BenchLink1RAG techniques + runnable notebooksgithub.com/NirDiamant/RAG_Techniques2Agent techniques + implementationsgithub.com/NirDiamant/GenAI_Agents3100+ runnable agent/RAG appsgithub.com/shubhamsaboo/awesome-llm-apps4LLM papers, training, deploy, checkpointsgithub.com/Hannibal046/Awesome-LLM5Prompting, CoT, ReAct, RAG, agentspromptingguide.ai6Daily research feedhuggingface.co/papers7Production agent patterns (lab)anthropic.com/engineering8Production LLM product patternsapplied-llms.org9Serving, evals, LLMOpsgithub.com/tensorchord/Awesome-LLMOps10Agent architecture survey (classic)lilianweng.github.io/posts/2023-06-23-agent
+
+A. Mega-hubs (techniques + code under one roof)
+
+#What you getDirect link11Advanced RAG survey listgithub.com/jxzhangjhu/Awesome-LLM-RAG12RAG tools/techniques mapgithub.com/Danielskry/Awesome-RAG13Prompt Engineering Guide repogithub.com/dair-ai/Prompt-Engineering-Guide14AI engineering reading listgithub.com/dave-nachman/awesome-ai-engineering15Production ML/LLMOps librariesgithub.com/EthicalML/awesome-production-machine-learning16Vector search / ANN librariesgithub.com/currentslab/awesome-vector-search17Agent frameworks + papers indexgithub.com/e2b-dev/awesome-ai-agents18Agentic reasoning paper mapgithub.com/weitianxin/Awesome-Agentic-Reasoning19Search-agent papers (ACL 2026 survey attached)github.com/YunjiaXi/Awesome-Search-Agent-Papers20Production RAG agent (graph controller)github.com/NirDiamant/Controllable-RAG-Agent21Hugging Face blog (PEFT, agents, eval, serving)huggingface.co/blog22Papers with Code (methods + impl)paperswithcode.com23Semantic Scholarsemanticscholar.org24ACL Anthology (NLP/LLM papers)aclanthology.org25arXiv cs.CLarxiv.org/list/cs.CL/recent
+
+B. Original algorithm papers (the actual methods)
+These are the sources the blogs summarize. Read these, not recaps.
+
+#AlgorithmDirect link26Transformerarxiv.org/abs/1706.0376227Original RAG (Lewis et al.)arxiv.org/abs/2005.1140128RAG survey (Naive / Advanced / Modular)arxiv.org/abs/2312.1099729Chain-of-Thoughtarxiv.org/abs/2201.1190330Self-Consistencyarxiv.org/abs/2203.1117131Tree of Thoughtsarxiv.org/abs/2305.1060132ReAct (Reason + Act)arxiv.org/abs/2210.0362933ReAct project + codereact-lm.github.io34Toolformerarxiv.org/abs/2302.0476135Reflexionarxiv.org/abs/2303.1136636Least-to-Most promptingarxiv.org/abs/2205.1062537HyDE (hypothetical document embeddings)arxiv.org/abs/2212.1049638Self-RAGarxiv.org/abs/2310.1151139CRAG (Corrective RAG)arxiv.org/abs/2401.1588440RAPTOR (recursive summary trees)arxiv.org/abs/2401.1805941GraphRAGarxiv.org/abs/2404.1613042Agentic RAG survey (2026)arxiv.org/abs/2501.0913643ColBERT (late interaction)arxiv.org/abs/2004.1283244HNSW (ANN graph search)arxiv.org/abs/1603.0932045LoRAarxiv.org/abs/2106.0968546QLoRAarxiv.org/abs/2305.1431447Prefix-Tuningarxiv.org/abs/2101.0019048InstructGPT / RLHFarxiv.org/abs/2203.0215549Constitutional AIarxiv.org/abs/2212.0807350DPOarxiv.org/abs/2305.1829051DeepSeek-R1 / GRPOarxiv.org/abs/2501.1294852FlashAttentionarxiv.org/abs/2205.1413553PagedAttention / vLLMarxiv.org/abs/2309.0618054Speculative decodingarxiv.org/abs/2211.1719255MemGPT (OS-style memory)arxiv.org/abs/2310.0856056Generative Agents (memory stream)arxiv.org/abs/2304.0344257LLM agent optimization surveyarxiv.org/abs/2503.12434
+
+C. Lab / vendor engineering (production-grade application logic)
+These are the sources that actually ship agents, tools, context, and evals.
+
+#SourceDirect link58Building effective agentsanthropic.com/engineering/building-effective-agents59Effective context engineeringanthropic.com/engineering/effective-context-engineering-for-ai-agents60Writing tools for agentsanthropic.com/engineering/writing-tools-for-agents61Multi-agent research systemanthropic.com/engineering/built-multi-agent-research-system62Anthropic researchanthropic.com/research63OpenAI Cookbookgithub.com/openai/openai-cookbook64Function callingplatform.openai.com/docs/guides/function-calling65Structured outputsplatform.openai.com/docs/guides/structured-outputs66OpenAI Agents SDKopenai.github.io/openai-agents-python67Gemini function callingai.google.dev/gemini-api/docs/function-calling68Gemini cookbookgithub.com/google-gemini/cookbook69Google DeepMind blogdeepmind.google/discover/blog70Meta AI blogai.meta.com/blog71FAISS (similarity search library)github.com/facebookresearch/faiss72Microsoft GraphRAG (code)github.com/microsoft/graphrag73GraphRAG docsmicrosoft.github.io/graphrag74Microsoft Research blogmicrosoft.com/en-us/research/blog75Model Context Protocol specmodelcontextprotocol.io
+
+D. Practitioner blogs (what actually works in production)
+
+#SourceDirect link76Chip Huyen — Agentshuyenchip.com/2025/01/07/agents.html77Chip Huyen archivehuyenchip.com78Eugene Yan — LLM system patternseugeneyan.com/writing/llm-patterns79Eugene Yan — eval processeugeneyan.com/writing/eval-process80Hamel Husain — AI evalshamel.dev/blog/posts/evals81Hamel field guidehamel.dev/blog/posts/field-guide82Jason Liu — systematically improving RAGjxnl.co/writing/2024/05/22/systematically-improving-your-rag83Simon Willison (tools, agents, prompt injection)simonwillison.net84Lethal trifecta for agentssimonwillison.net/2025/Jun/16/the-lethal-trifecta85Lilian Weng — prompt engineeringlilianweng.github.io/posts/2023-03-15-prompt-engineering86Sebastian Raschka (architecture / training)sebastianraschka.com/blog87LangChain — context engineeringblog.langchain.com/context-engineering-for-agents88Honeycomb — hard parts of LLM productshoneycomb.io/blog/hard-stuff-nobody-talks-about-llm
+
+E. Implementation frameworks (the application algorithms in code)
+
+#Framework / technique surfaceDirect link89LangGraph (DAG/state-machine agents)github.com/langchain-ai/langgraph90LlamaIndex (data + advanced RAG)docs.llamaindex.ai91Haystack (production pipelines)docs.haystack.deepset.ai92DSPy (compile prompts, not hand-write them)dspy.ai93Hugging Face PEFT (LoRA/QLoRA)huggingface.co/docs/peft94Hugging Face TRL (SFT, DPO, GRPO, PPO)huggingface.co/docs/trl95Instructor (structured outputs)python.useinstructor.com96Outlines (constrained decoding)github.com/dottxt-ai/outlines97vLLM (PagedAttention serving)docs.vllm.ai98SGLang (RadixAttention)github.com/sgl-project/sglang99RAGAS (RAG eval metrics)docs.ragas.io100DeepEval (pytest-style LLM evals)github.com/confident-ai/deepeval
+That is 100. Below are the extra desks you asked for (social + tracking + infra). They are not padded into the 100.
+
+Extra desks: retrieval infra, evals, serving, tracking, social
+Vector / hybrid search (DSA around RAG)
+
+Pinecone learning center (chunking, hybrid, rerank): pinecone.io/learn
+Qdrant articles (HNSW, hybrid, ColBERT rerank): qdrant.tech/articles
+Weaviate blog: weaviate.io/blog
+ColBERT implementation: github.com/stanford-futuredata/ColBERT
+SPLADE: github.com/naver/splade
+Sentence Transformers: sbert.net
+MTEB embedding leaderboard: huggingface.co/spaces/mteb/leaderboard
+Azure hybrid search + RRF: learn.microsoft.com/azure/search/hybrid-search-ranking
+
+Serving / inference algorithms
+
+TensorRT-LLM: github.com/NVIDIA/TensorRT-LLM
+llama.cpp: github.com/ggerganov/llama.cpp
+Unsloth (fast LoRA): github.com/unslothai/unsloth
+LiteLLM (one API, routing, fallbacks): docs.litellm.ai
+
+Evals / observability
+
+LangSmith: docs.smith.langchain.com
+Langfuse: langfuse.com/docs
+Arize Phoenix: docs.arize.com/phoenix
+Promptfoo: promptfoo.dev/docs
+Giskard: github.com/Giskard-AI/giskard
+
+Memory / agents in production
+
+Letta (MemGPT lineage): docs.letta.com
+AutoGen: microsoft.github.io/autogen
+CrewAI: docs.crewai.com
+Hugging Face smolagents: huggingface.co/docs/smolagents
+Pydantic AI: ai.pydantic.dev
+
+Benchmarks that define “does the technique work”
+
+LMSYS Arena: lmarena.ai
+SWE-bench: swebench.com
+HELM: crfm.stanford.edu/helm
+Hugging Face Open LLM Leaderboard: huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard
+
+Keep current (newsletters / feeds, not courses)
+
+Latent Space: latent.space
+Interconnects (post-training, RLHF, DPO, GRPO): interconnects.ai
+Ahead of AI: magazine.sebastianraschka.com
+Import AI (Jack Clark): importai.net
+Karpathy: karpathy.github.io + github.com/karpathy/nanoGPT
+
+Communities (latest techniques show up here first)
+
+PlaceDirect linkr/LLMDevsreddit.com/r/LLMDevsr/Ragreddit.com/r/Ragr/LocalLLaMAreddit.com/r/LocalLLaMAr/MachineLearningreddit.com/r/MachineLearningr/LangChainreddit.com/r/LangChain
+X accounts that actually post techniques, papers, and production notes:
+
+x.com/karpathy
+x.com/simonw
+x.com/swyx
+x.com/jxnlco
+x.com/HamelHusain
+x.com/chipro
+x.com/rasbt
+x.com/natolambert
+x.com/lilianweng
+x.com/_akhaliq (daily papers)

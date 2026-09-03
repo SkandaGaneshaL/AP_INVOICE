@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from .models import DemonstrationExample, RuleFeedbackPacket
-from .operators import CorrectionExample
 
 
 class FeedbackRepository:
@@ -28,7 +27,7 @@ class FeedbackRepository:
         return rows[-max(0, limit):]
 
     def retrieve_operator_examples(self, field_type: str, failure_type: str, layout_signature: Any,
-                                   label_text: str, k: int = 2) -> list[CorrectionExample]:
+                                   label_text: str, k: int = 2) -> list[DemonstrationExample]:
         """Retrieve compact, type-compatible examples across field keys."""
         wanted_layout = getattr(layout_signature, "values", lambda: layout_signature)()
         wanted_label = str(label_text or "").casefold()
@@ -45,7 +44,7 @@ class FeedbackRepository:
             ranked.append((score, row))
         result = []
         for _, row in sorted(ranked, key=lambda item: item[0], reverse=True)[:max(0, min(k, 2))]:
-            try: result.append(CorrectionExample.model_validate(row))
+            try: result.append(DemonstrationExample.model_validate(row))
             except Exception: continue
         return result
 

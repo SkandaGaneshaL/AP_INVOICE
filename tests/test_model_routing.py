@@ -2,25 +2,26 @@ from app.comparator import analyze_changes, find_changes
 from app.model_registry import resolve_rule_generation_model, rule_generation_settings
 from app.model_registry import RuleGenerationConfigurationError, validate_rule_generation_configuration
 from app.models import RuleGenerationContext
-from app.oci_rule_provider import OciOpenAICompatibleRuleGenerator
+from app.oci_provider import OciNativeRuleGenerator
 
 
-class FakeResponses:
+class FakeChatClient:
     def __init__(self):
         self.requests = []
 
-    def create(self, **request):
-        self.requests.append(request)
-        return {
-            "output_text": "Extract the value next to the invoice number label.",
-            "usage": {"input_tokens": 100, "output_tokens": 12, "total_tokens": 112},
-            "headers": {"opc-request-id": "req-test"},
-        }
-
-
-class FakeClient:
-    def __init__(self):
-        self.responses = FakeResponses()
+    def chat(self, details):
+        self.requests.append(details)
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            data=SimpleNamespace(chat_response=SimpleNamespace(
+                choices=[SimpleNamespace(
+                    finish_reason="STOP",
+                    message=SimpleNamespace(content=[SimpleNamespace(text='{"sentence":"Extract the value next to the invoice number label.","noop":false,"behavior":"labeled_value","label_policy":"explicit label","transform_policy":"preserve","null_policy":"labeled_empty_to_null","scope":"this_supplier_only"}', thought=False)])
+                )],
+                usage=SimpleNamespace(prompt_tokens=100, completion_tokens=12, total_tokens=112),
+            )),
+            headers={"opc-request-id": "req-test"},
+        )
 
 
 def test_sentence_model_registry_defaults_to_gpt_oss(monkeypatch):
@@ -45,8 +46,8 @@ def test_gpt4o_model_registry_and_settings(monkeypatch):
 
 
 def test_gpt_oss_provider_uses_text_only_prompt_and_usage():
-    client = FakeClient()
-    provider = OciOpenAICompatibleRuleGenerator(client=client)
+    client = FakeChatClient()
+    provider = OciNativeRuleGenerator(client=client, compartment_id="ocid1.compartment.oc1..test", model_id="openai.gpt-oss-20b")
     context = RuleGenerationContext(
         field_key="InvoiceNumber",
         display_label="Invoice Number",
@@ -57,10 +58,10 @@ def test_gpt_oss_provider_uses_text_only_prompt_and_usage():
 
     result = provider.generate_with_metadata(context)
 
-    request = client.responses.requests[0]
-    assert request["model"] == "openai.gpt-oss-20b"
-    assert request["store"] is False
-    assert all(part["type"] == "input_text" for message in request["input"] for part in message["content"])
+    request = client.requests[0].chat_request
+    assert request.messages[1].content[0].text
+    assert request.temperature == 0.0
+    assert request.reasoning_effort == "LOW"
     assert result.sentence.startswith("Extract the value")
     assert result.usage.input_tokens == 100
     assert result.usage.output_tokens == 12

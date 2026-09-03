@@ -26,7 +26,7 @@ class AuditRepository:
                   "FIELD_KEY": field_key, "path": path, "old_value_hash": _hash(old_value),
                   "new_value_hash": _hash(new_value), "generated_sentence": sentence,
                   "status": status, "model": model or (metadata or {}).get("model") or os.getenv("OCI_MODEL_ID", "google.gemini-2.5-flash"),
-                  "oci_request_id": request_id, "prompt_version": os.getenv("GEPA_PROMPT_VERSION", "v2"),
+                  "oci_request_id": request_id, "prompt_version": os.getenv("PROMPT_VERSION", "correction-delta-v1"),
                   "strategy": strategy, "evaluation_score": evaluation_score,
                   "evaluation_feedback": evaluation_feedback,
                   "selected_for_persistence": selected_for_persistence,
@@ -44,5 +44,18 @@ class AuditRepository:
             except json.JSONDecodeError:
                 continue
             if record.get("candidate_id") == candidate_id:
+                return record
+        return None
+
+    def find_preview_by_prompt_hash(self, prompt_hash: str):
+        """Return the newest preview for an identical correction context."""
+        if not prompt_hash or not self.path.exists():
+            return None
+        for line in reversed(self.path.read_text(encoding="utf-8").splitlines()):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("prompt_hash") == prompt_hash and record.get("promotion_status") != "promoted":
                 return record
         return None

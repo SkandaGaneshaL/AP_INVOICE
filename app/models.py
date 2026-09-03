@@ -2,7 +2,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .model_registry import ReasoningEffort, SentenceGenerationModel
-from .operators import FieldProgram
 
 
 class RuleRecord(BaseModel):
@@ -19,16 +18,21 @@ class UpdateRequest(BaseModel):
     final_response: dict[str, Any]
     dry_run: bool = False
     allow_partial: bool = False
-    enable_gepa: bool = True
-    gepa_max_iterations: int = 2
-    gepa_max_metric_calls: int = 5
-    gepa_history_limit: int = 10
-    gepa_validation_limit: int = 5
-    gepa_seed: int = 0
-    gepa_reflection_budget: float | None = None
+    history_limit: int = 2
     document_id: str | None = None
     rule_generation_model: SentenceGenerationModel = "gpt-oss-20b"
     reasoning_effort: ReasoningEffort = "low"
+    supplier_key: str | None = None
+
+
+class CorrectionIntent(BaseModel):
+    noop: bool = False
+    behavior: str = "labeled_value"
+    label_policy: str = ""
+    transform_policy: str = ""
+    null_policy: str = "labeled_empty_to_null"
+    scope: str = "this_supplier_only"
+    sentence: str
 
 
 class ReasoningConfig(BaseModel):
@@ -36,14 +40,6 @@ class ReasoningConfig(BaseModel):
     effective_effort: str | None = None
     supported: bool = False
     visible_reasoning: bool = False
-
-
-class GepaRunConfig(BaseModel):
-    max_iterations: int = Field(default=2, ge=1, le=100)
-    max_metric_calls: int = Field(default=5, ge=1, le=1000)
-    reflection_budget: float | None = Field(default=None, ge=0)
-    timeout_seconds: float = Field(default=120, gt=0, le=7200)
-    random_seed: int = 0
 
 
 class FieldChange(BaseModel):
@@ -136,6 +132,17 @@ class ChangeResult(BaseModel):
     decision_summary: str | None = None
     reason: str | None = None
     correction_kind: str | None = None
+    observed_correction: str | None = None
+    intent: CorrectionIntent | None = None
+    # Public name for the active structured contract; ``intent`` remains for
+    # compatibility with older clients.
+    correction_intent: CorrectionIntent | None = None
+    reason_basis: list[str] = Field(default_factory=list)
+    rule_diff: dict[str, Any] = Field(default_factory=dict)
+    evidence_status: str = "unavailable"
+    rule_merge_usage: UsageSummary | None = None
+    oci_calls: int = 0
+    rejection_reason: str | None = None
 
 
 class RuleGenerationContext(BaseModel):
@@ -159,7 +166,7 @@ class RuleGenerationContext(BaseModel):
     baseline_evaluation: Any = None
     normalization_mode: str = "none"
     reasoning_effort: ReasoningEffort = "low"
-    current_program: FieldProgram | None = None
+    current_program: dict[str, Any] | None = None
 
 
 class EvaluationResult(BaseModel):
@@ -285,6 +292,9 @@ class ProviderGenerationResult(BaseModel):
     reasoning_parameter_sent: bool = False
     verbosity_parameter_sent: bool = False
     usage_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    intent: CorrectionIntent | None = None
+    noop: bool = False
+    correction_kind: str | None = None
 
 
 class StrategyResult(BaseModel):
@@ -295,6 +305,9 @@ class StrategyResult(BaseModel):
     evaluation: EvaluationResult | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     usage: UsageSummary | None = None
+    sentence_generation_usage: UsageSummary | None = None
+    extraction_usage: UsageSummary | None = None
+    rule_merge_usage: UsageSummary | None = None
 
 
 class UpdateResponse(BaseModel):
@@ -302,15 +315,12 @@ class UpdateResponse(BaseModel):
     updated_rules: list[RuleRecord]
     changes: list[ChangeResult]
     summary: dict[str, int]
-    gepa_job_id: str | None = None
-    gepa_status: str | None = None
 
 
 class UpdateJobCreateResponse(BaseModel):
     job_id: str
     status: str
     normal_status: str
-    gepa_status: str
     requested_config: dict[str, Any] = Field(default_factory=dict)
     effective_config: dict[str, Any] = Field(default_factory=dict)
     requested_model: str = "gpt-oss-20b"
@@ -323,6 +333,7 @@ class UpdateJobCreateResponse(BaseModel):
     reasoning_ui_contract_version: str = "safe-summary-v1"
     sentence_generation_usage: UsageSummary | None = None
     extraction_usage: UsageSummary | None = None
+    rule_merge_usage: UsageSummary | None = None
 
 
 class UpdateJobStatusResponse(BaseModel):
@@ -330,9 +341,7 @@ class UpdateJobStatusResponse(BaseModel):
     status: str
     phase: str
     normal_status: str
-    gepa_status: str
     normal_result: StrategyResult | None = None
-    gepa_result: StrategyResult | None = None
     progress: dict[str, Any] = Field(default_factory=dict)
     requested_config: dict[str, Any] = Field(default_factory=dict)
     effective_config: dict[str, Any] = Field(default_factory=dict)
@@ -349,20 +358,15 @@ class UpdateJobStatusResponse(BaseModel):
     reasoning_ui_contract_version: str = "safe-summary-v1"
     sentence_generation_usage: UsageSummary | None = None
     extraction_usage: UsageSummary | None = None
-
-
-class GepaJobResponse(BaseModel):
-    job_id: str
-    status: str
-    progress: dict[str, Any] = Field(default_factory=dict)
-    strategy: StrategyResult | None = None
-    error: dict[str, Any] | None = None
+    rule_merge_usage: UsageSummary | None = None
 
 
 class PromoteRequest(BaseModel):
     candidate_id: str
     expected_rule_version: str = "v1"
     dry_run: bool = False
+    promotion_scope: str = "supplier"
+    supplier_key: str | None = None
 
 
 class PromoteBatchRequest(BaseModel):
@@ -370,6 +374,8 @@ class PromoteBatchRequest(BaseModel):
     expected_rule_version: str = "v1"
     confirm: bool = False
     dry_run: bool = False
+    promotion_scope: str = "supplier"
+    supplier_key: str | None = None
 
 
 class PromoteBatchResponse(BaseModel):

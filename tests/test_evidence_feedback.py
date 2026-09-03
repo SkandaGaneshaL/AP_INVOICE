@@ -4,7 +4,6 @@ import pymupdf
 
 from app.evidence import ExtractionEvidenceBuilder
 from app.evaluation import ExtractionEvaluator, canonicalize
-from app.gepa_adapter import ExtractionRuleGEPAAdapter, deserialize_context_example, serialize_context_example
 from app.models import EvidenceMatch, RuleFeedbackPacket, RuleGenerationContext, RuleRecord
 from app.prompt_builder import RulePromptBuilder
 
@@ -70,13 +69,11 @@ def test_prompt_contains_evidence_and_no_hardcoded_rule_instruction():
         short_rule="Extract invoice currency.", detailed_rule=[], old_value="USD", new_value="INR",
         feedback_packet=packet)
     prompt = RulePromptBuilder.seed(context)
-    assert "Currency: INR" in prompt
-    assert "Reference amount in USD" in prompt
-    assert "Do not hard-code INR" in prompt
-    assert "explicit Currency label" in prompt
-    seed = RulePromptBuilder.gepa_seed(context)
-    assert "currency" in seed.casefold()
-    assert "\n" not in seed
+    assert "InvoiceCurrency" in prompt
+    assert "Currency" in prompt
+    assert "Do not repeat either invoice value" in prompt
+    assert "Currency: INR" not in prompt
+    assert "Reference amount in USD" not in prompt
 
 
 class FakeExecutor:
@@ -112,38 +109,3 @@ def test_invoice_number_canonicalization_is_rule_specific():
     context.normalization_mode = "preserve_prefix"
     assert canonicalize("InvoiceNumber", "TP100049722", context) == "TP100049722"
     assert canonicalize("InvoiceCurrency", "USD", context) == "USD"
-
-
-def test_gepa_adapter_exposes_optional_proposal_hook_as_none():
-    context = RuleGenerationContext(field_key="InvoiceCurrency", field_path="InvoiceCurrency")
-    adapter = ExtractionRuleGEPAAdapter(context, ExtractionEvaluator())
-    assert hasattr(adapter, "propose_new_texts")
-    assert adapter.propose_new_texts is None
-
-
-def test_gepa_context_round_trip_rebuilds_feedback_packet_without_pdf_serialization():
-    packet = RuleFeedbackPacket(
-        field_key="InvoiceCurrency", field_path="InvoiceCurrency", previous_value="USD", corrected_value="INR",
-        evidence=[EvidenceMatch(page=1, label="Currency", value="INR", snippet="Currency: INR")],
-    )
-    context = RuleGenerationContext(
-        field_key="InvoiceCurrency", field_path="InvoiceCurrency", old_value="USD", new_value="INR",
-        final_response={"InvoiceCurrency": {"value": "INR", "Page": 1}},
-        document_bytes=b"%PDF private bytes", feedback_packet=packet,
-    )
-    example = serialize_context_example(context)
-    rebuilt = deserialize_context_example(context, example)
-    assert isinstance(rebuilt.feedback_packet, RuleFeedbackPacket)
-    assert rebuilt.feedback_packet.evidence[0].snippet == "Currency: INR"
-    assert rebuilt.document_bytes == context.document_bytes
-    assert "document_bytes" not in example
-
-
-def test_historical_gepa_example_does_not_reuse_current_pdf():
-    context = RuleGenerationContext(field_key="InvoiceCurrency", field_path="InvoiceCurrency",
-                                    document_bytes=b"%PDF private bytes")
-    rebuilt = deserialize_context_example(context, {
-        "_example_type": "historical", "document_available": False,
-        "field_key": "InvoiceCurrency", "field_path": "InvoiceCurrency",
-    })
-    assert rebuilt.document_bytes is None

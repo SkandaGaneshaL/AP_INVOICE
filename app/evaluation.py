@@ -5,11 +5,8 @@ from typing import Any, Protocol
 
 from .models import EvaluationResult, RuleFeedbackPacket, RuleGenerationContext, UsageSummary
 from .normalization import apply_policy, infer_policy
-from .candidate_binder import bind_field
-from .layout_graph import LayoutGraph
-from .operators import CorrectionExample, FieldProgram
-from .transform_induction import apply_program
 from .sentence_validators import validate_sentence
+
 
 
 class ExtractionExecutor(Protocol):
@@ -41,44 +38,6 @@ class EvaluationTrace:
     usage: UsageSummary | None = None
 
 
-def evaluate_candidate_program(graph: LayoutGraph, current_programs: dict[str, FieldProgram], field_key: str,
-                               candidate_program: FieldProgram, correction: CorrectionExample) -> EvaluationResult:
-    """Evaluate a candidate against the current layout without calling an LLM."""
-    del current_programs
-    context = {"field_key": field_key, "old_value": correction.old_value, "new_value": correction.new_value}
-    bound = bind_field(candidate_program, graph, context)
-    expected = correction.new_value
-    match = _same(bound.transformed_value, expected)
-    evidence_supported = bound.status == "unique" and bool(bound.evidence)
-    score = 1.0 if match and evidence_supported else .0
-    return EvaluationResult(score=score, feedback="Counterfactual program matched the corrected value and layout evidence." if score else "Counterfactual program did not produce a unique supported match.",
-                             confidence="normal" if score else "failed", field_match=match,
-                             evidence_supported=evidence_supported, schema_valid=bound.status == "unique",
-                             candidate_status="accepted_with_transformation" if score else "rejected",
-                             promotion_eligible=score >= .9, expected_value=expected,
-                             actual_value=bound.transformed_value, canonical_actual_value=bound.canonical_value,
-                             transformation_expected=(candidate_program.transform[0].op if candidate_program.transform else None))
-
-
-def evaluate_program_counterfactual(program: FieldProgram, raw_evidence_value: Any,
-                                    corrected_value: Any, evidence_hit: Any = None,
-                                    competing_hits: list[Any] | None = None,
-                                    existing_programs: dict[str, FieldProgram] | None = None) -> EvaluationResult:
-    """Evaluate the executable program without extraction-model calls."""
-    del existing_programs
-    actual = apply_program(program, raw_evidence_value)
-    match = _same(actual, corrected_value)
-    supported = evidence_hit is not None
-    # Distinct order/shipment references remain audit evidence and do not
-    # invalidate a correctly labelled match. Only a competitor supporting the
-    # same corrected value is a promotion blocker.
-    competing = any(
-        _norm(getattr(hit, "normalized_value", None) or getattr(hit, "value", None))
-        == _norm(corrected_value)
-        for hit in (competing_hits or [])
-    )
-
-
 def evaluate_sentence_gates(sentence: str, context: RuleGenerationContext) -> EvaluationResult:
     """Cheap text/evidence gate; avoids a second PDF extraction per candidate."""
     try:
@@ -97,24 +56,6 @@ def evaluate_sentence_gates(sentence: str, context: RuleGenerationContext) -> Ev
                             field_match=True, evidence_supported=supported, schema_valid=True,
                             candidate_status="evaluated" if supported else "rejected",
                             promotion_eligible=supported)
-    score = 1.0 if match and supported else 0.0
-    return EvaluationResult(
-        score=score,
-        feedback=("Counterfactual program matched the corrected value and selected evidence."
-                  if score else "Counterfactual program did not match supported evidence."),
-        confidence="normal" if score else "failed",
-        field_match=match,
-        evidence_supported=supported,
-        schema_valid=True,
-        candidate_status="accepted_with_transformation" if score else "rejected",
-        promotion_eligible=bool(match and supported and not competing),
-        expected_value=corrected_value,
-        actual_value=actual,
-        canonical_actual_value=actual,
-        transformation_expected=(program.transform[0].op if program.transform else None),
-    )
-
-
 def _norm(value: Any) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
@@ -139,7 +80,7 @@ def canonicalize(field_key: str, value: Any, context: RuleGenerationContext) -> 
 
 
 class ExtractionEvaluator:
-    """Evaluate the actual extraction result and produce GEPA diagnostics."""
+    """Optional gold-set evaluator, disabled unless explicitly configured."""
 
     def __init__(self, executor: ExtractionExecutor | None = None):
         self.executor = executor
@@ -155,7 +96,7 @@ class ExtractionEvaluator:
                 packet = RuleFeedbackPacket.model_validate(packet)
                 context.feedback_packet = packet
             except Exception:
-                feedback = "The GEPA example contained an invalid feedback packet and could not be evaluated."
+                feedback = "The feedback packet contained invalid data and could not be evaluated."
                 return EvaluationResult(score=0.0, confidence="failed", feedback=feedback), EvaluationTrace(
                     context.field_path, instruction, None, context.new_value, 0.0, feedback,
                     format_valid=False, field_key=context.field_key, schema_valid=False)
@@ -167,7 +108,7 @@ class ExtractionEvaluator:
         expected_value = _value(expected_node)
         expected_page = expected_node.get("Page") if isinstance(expected_node, dict) else None
         if self.executor is None:
-            feedback = "No extraction executor is configured; GEPA cannot claim extraction improvement."
+            feedback = "No extraction executor is configured; gold-set evaluation is unavailable."
             return EvaluationResult(score=None, confidence="unavailable", feedback=feedback), EvaluationTrace(
                 context.field_path, instruction, None, expected_value, 0.0, feedback,
                 field_key=context.field_key, evidence_snippets=snippets, competing_snippets=competing_snippets)

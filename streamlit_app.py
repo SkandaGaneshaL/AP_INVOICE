@@ -35,6 +35,7 @@ for key, default in (
     ("rule_generation_model", "gpt-oss-20b"),
     ("rule_generation_model_label", "GPT-OSS 20B"),
     ("reasoning_effort_label", "Low"),
+    ("supplier_key", ""),
 ):
     st.session_state.setdefault(key, default)
 
@@ -133,19 +134,42 @@ def render_usage(title, usage, *, unavailable_message="Unavailable from OCI"):
         })
 
 
+def extraction_table_rows(payload):
+    """Project public extraction JSON into stable, display-only table rows."""
+    rows = []
+    for field, node in (payload or {}).items():
+        if isinstance(node, dict) and {"value", "Page"}.issubset(node):
+            rows.append({"Field": field, "Value": node.get("value"), "Page": node.get("Page")})
+        elif isinstance(node, list):
+            for index, item in enumerate(node, start=1):
+                if isinstance(item, dict) and {"value", "Page"}.issubset(item):
+                    rows.append({"Field": f"{field}[{index}]", "Value": item.get("value"), "Page": item.get("Page")})
+                elif isinstance(item, dict):
+                    for child, child_node in item.items():
+                        if isinstance(child_node, dict) and {"value", "Page"}.issubset(child_node):
+                            rows.append({"Field": f"{field}[{index}].{child}", "Value": child_node.get("value"), "Page": child_node.get("Page")})
+                        else:
+                            rows.append({"Field": f"{field}[{index}].{child}", "Value": child_node, "Page": None})
+                else:
+                    rows.append({"Field": f"{field}[{index}]", "Value": item, "Page": None})
+        else:
+            rows.append({"Field": field, "Value": node, "Page": None})
+    return rows
+
+
 left, right = st.columns(2)
 with left:
-    st.subheader("Original extracted JSON")
-    st.text_area(
-        "Original extracted JSON",
-        key="invoice_payload_editor",
-        height=460,
-        disabled=True,
-        label_visibility="collapsed",
-    )
-    if st.session_state.extraction_diagnostics:
-        st.caption("Extraction diagnostics")
-        st.json(st.session_state.extraction_diagnostics)
+    st.subheader("Original extracted fields")
+    if st.session_state.extracted_json:
+        st.dataframe(
+            extraction_table_rows(st.session_state.extracted_json),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("Upload and extract an invoice to view its fields.")
+    with st.expander("Original extraction JSON", expanded=False):
+        st.code(st.session_state.invoice_payload_editor, language="json")
     if st.session_state.extraction_usage:
         render_usage("PDF extraction usage", st.session_state.extraction_usage)
 with right:
@@ -156,9 +180,21 @@ with right:
         height=460,
         label_visibility="collapsed",
     )
+    try:
+        corrected_preview = json.loads(corrected_text or "{}")
+    except json.JSONDecodeError:
+        corrected_preview = {}
+    if corrected_preview:
+        with st.expander("User-corrected fields", expanded=False):
+            st.dataframe(extraction_table_rows(corrected_preview), width="stretch", hide_index=True)
 
 st.divider()
 st.subheader("Rule-candidate settings")
+st.text_input(
+    "Supplier scope key (optional)",
+    key="supplier_key",
+    help="Promoted candidates are saved to this supplier overlay when provided.",
+)
 dry_run = st.checkbox("Dry run (do not persist rules or audit)")
 allow_partial = st.checkbox("Allow partial updates")
 model_labels = {
@@ -172,17 +208,10 @@ selected_label = st.segmented_control(
     key="rule_generation_model_label",
 ) or "GPT-OSS 20B"
 st.session_state.rule_generation_model = model_labels[selected_label]
-st.caption("PDF extraction model: Gemini 2.5 Flash")
-st.caption(f"PDF extraction region: {os.getenv('OCI_EXTRACTION_REGION') or os.getenv('OCI_EXC_REGION', 'not configured')}")
-st.caption(f"PDF extraction project: {'configured' if os.getenv('OCI_EXTRACTION_PROJECT_ID') or os.getenv('PROJECT_ID') else 'not configured'}")
-st.caption(f"Sentence-generation model: {selected_label}")
 selected_model = resolve_rule_generation_model(st.session_state.rule_generation_model)
 sentence_settings = rule_generation_settings(selected_model)
 sentence_mode = sentence_settings.get("serving_mode") or "on_demand"
 endpoint_configured = bool(sentence_settings.get("endpoint_id"))
-st.caption(f"Effective model: {selected_model.model_id}")
-st.caption(f"Sentence-generation region: {sentence_settings.get('region') or 'not configured'}")
-st.caption(f"Sentence-generation serving mode: {sentence_mode}")
 reasoning_labels = {"None": "none", "Minimal": "minimal", "Low": "low", "Medium": "medium", "High": "high"}
 reasoning_supported = selected_model.model_id == "openai.gpt-oss-20b"
 reasoning_label = st.segmented_control(
@@ -211,6 +240,7 @@ if generate_clicked:
             "document_id": st.session_state.document_id,
             "rule_generation_model": st.session_state.rule_generation_model,
             "reasoning_effort": st.session_state.reasoning_effort,
+            "supplier_key": st.session_state.supplier_key.strip() or None,
         }
         with st.spinner("Creating normal-generation job..."):
             response = httpx.post(
@@ -240,7 +270,8 @@ def render_strategy(strategy, title, key_suffix):
     if not strategy:
         return
     st.subheader(title)
-    st.dataframe(strategy.get("changes", []), width="stretch")
+    # Render only changed fields; the unchanged rule snapshot is not a
+    # generated candidate and is intentionally omitted from the main UI.
     metadata = strategy.get("metadata") or {}
     evaluation = strategy.get("evaluation") or {}
     if evaluation:
@@ -249,19 +280,47 @@ def render_strategy(strategy, title, key_suffix):
             f"score: {_token_display(evaluation.get('score'))}"
         )
     st.info(f"Persistence: {metadata.get('persistence_status', 'not_persisted')}")
-    model = metadata.get("model")
-    if model:
-        st.caption(f"Sentence-generation model: {model}")
     usage = strategy.get("usage")
     if usage:
         render_usage("Rule-generation usage", usage)
-    for change in strategy.get("changes", []):
+    changes = strategy.get("changes", [])
+    summary_rows = []
+    for change in changes:
+        if not change.get("generated_sentence") and change.get("status") not in {"generation_failed", "unavailable"}:
+            continue
+        change_usage = change.get("usage") or {}
+        summary_rows.append({
+            "Field": change.get("FIELD_KEY", "Field"),
+            "Old value": change.get("old_value"),
+            "New value": change.get("new_value"),
+            "Correction": change.get("observed_correction") or change.get("correction_kind") or "not classified",
+            "Status": change.get("status", "unknown"),
+            "OCI calls": change_usage.get("calls", change.get("oci_calls", 0)),
+        })
+    if summary_rows:
+        st.dataframe(summary_rows, width="stretch", hide_index=True)
+    for change in changes:
         generation = change.get("generation") or {}
         if change.get("generated_sentence"):
-            st.markdown(f"**{change.get('FIELD_KEY', 'Field')} instruction**")
+            st.markdown(f"**Field:** {change.get('FIELD_KEY', 'Field')}")
+            st.write(f"Old value: {change.get('old_value')}")
+            st.write(f"New value: {change.get('new_value')}")
+            st.caption(f"Observed correction: {change.get('observed_correction') or 'not classified'}")
+            st.markdown("**Generated sentence**")
             st.write(change["generated_sentence"])
             st.caption(f"Correction kind: {change.get('correction_kind') or 'not classified'}")
-            st.caption(f"LLM calls: {1 if change.get('oci_request_id') else 0}")
+            st.caption(f"Status: {change.get('status', 'unknown')} · Promotion eligible: {change.get('promotion_eligible', False)}")
+            change_usage = change.get("usage") or {}
+            st.caption(f"LLM calls: {change_usage.get('calls', change.get('oci_calls', 1 if change.get('oci_request_id') else 0))}")
+            if change_usage:
+                render_usage(f"Usage for {change.get('FIELD_KEY', 'field')}", change_usage)
+            intent = change.get("correction_intent") or change.get("intent") or {}
+            if intent:
+                with st.expander("Correction intent", expanded=False):
+                    st.write({key: intent.get(key) for key in ("behavior", "label_policy", "transform_policy", "null_policy", "scope") if intent.get(key)})
+            if change.get("rule_diff"):
+                with st.expander("Rule changes", expanded=False):
+                    st.write(change["rule_diff"])
             reason = change.get("reason")
             if reason:
                 with st.expander("Business explanation", expanded=True):
@@ -270,18 +329,8 @@ def render_strategy(strategy, title, key_suffix):
             reason = change.get("reason", "candidate generation failed")
             st.error(f"{change.get('FIELD_KEY', 'Field')}: {reason}")
         if generation:
-            with st.expander("Generation diagnostics", expanded=False):
-                st.write({
-                    key: generation.get(key)
-                    for key in ("attempts", "application_output_limit_sent", "provider_managed_limit",
-                                "finish_reasons", "request_ids", "reason")
-                    if key in generation
-                })
-                if generation.get("reason") == "provider_output_truncated_after_repair":
-                    st.warning(
-                        "OCI reached its provider-managed output limit before returning a complete rule. "
-                        "The rule was not saved."
-                    )
+            if generation.get("reason") == "provider_output_truncated_after_repair":
+                st.warning("OCI reached its provider-managed output limit before returning a complete rule. The rule was not saved.")
         evidence = change.get("evidence", [])
         competing = change.get("competing_evidence", [])
         if evidence or competing:
@@ -293,8 +342,7 @@ def render_strategy(strategy, title, key_suffix):
                 if competing:
                     st.caption("Competing evidence")
                     st.dataframe(competing, width="stretch", hide_index=True)
-    st.download_button(f"Download {title} preview rules", json.dumps(strategy.get("updated_rules", []), ensure_ascii=False, indent=2),
-                       file_name=f"{key_suffix}_preview_rules.json", mime="application/json", key=f"download-{key_suffix}")
+    st.caption("Preview only. Production rules are unchanged until explicit approval.")
 
 
 def _eligible(change):
@@ -339,7 +387,9 @@ def render_candidate_approval(job):
     if approve:
         response = httpx.post(
             f"{api_url.rstrip('/')}/v1/extraction-rules/promote-batch",
-            json={"candidate_ids": selected_ids, "expected_rule_version": "v1", "confirm": True, "dry_run": False},
+            json={"candidate_ids": selected_ids, "expected_rule_version": "v1", "confirm": True,
+                  "promotion_scope": "supplier" if st.session_state.supplier_key.strip() else "global",
+                  "supplier_key": st.session_state.supplier_key.strip() or None, "dry_run": False},
             timeout=httpx.Timeout(60, connect=connect_timeout_seconds),
         )
         if response.is_error:
@@ -347,7 +397,8 @@ def render_candidate_approval(job):
         else:
             result = response.json()
             if result.get("status") == "promoted":
-                st.success("Approved candidates were persisted to extraction_rules.json")
+                scope = result.get("promotion_scope", "supplier")
+                st.success(f"Approved candidates were persisted to the {scope} rule scope.")
                 st.session_state.promotion_message = result
                 st.session_state.candidate_selections = {}
                 st.rerun()
@@ -431,28 +482,14 @@ if st.session_state.update_job_id:
                 if not change.get("reason") and change.get("FIELD_KEY") in st.session_state.sse_decision_summaries:
                     change["reason"] = st.session_state.sse_decision_summaries[change["FIELD_KEY"]]
             st.session_state.update_job_data = job
-            st.caption(f"Generation phase: {job.get('phase')}")
-            detection = job.get("change_detection") or {}
-            if detection:
-                st.caption(f"Change detection: {detection.get('reason', 'unknown')}")
-                ignored_pages = detection.get("ignored_page_only_fields") or []
-                ignored_unchanged = detection.get("ignored_unchanged_fields") or []
-                ignored_unmapped = detection.get("ignored_unmapped_fields") or []
-                if ignored_pages or ignored_unchanged or ignored_unmapped:
-                    with st.expander("Change-detection details"):
-                        st.json({
-                            "changed_fields": detection.get("changed_fields", []),
-                            "ignored_page_only_fields": ignored_pages,
-                            "ignored_unchanged_fields": ignored_unchanged,
-                            "ignored_unmapped_fields": ignored_unmapped,
-                        })
+            job_usage = job.get("sentence_generation_usage") or (job.get("usage") or {}).get("normal") or {}
+            usage_calls = int(job_usage.get("calls") or 0) if isinstance(job_usage, dict) else 0
+            reported_calls = int(job.get("oci_sentence_generation_call_count") or 0)
+            if job.get("status") == "completed" and usage_calls > 0 and reported_calls == 0:
+                st.warning("Runtime metadata mismatch: usage reports OCI calls but the job call counter is zero. Restart FastAPI and refresh this job.")
             st.caption(
-                f"Sentence-generation OCI call: {'made' if job.get('oci_sentence_generation_called') else 'not made'} "
-                f"({job.get('oci_sentence_generation_call_count', 0)} call(s))"
-            )
-            st.caption(
-                f"PDF extraction model: {job.get('extraction_model', 'google.gemini-2.5-flash')} · "
-                f"Sentence-generation model: {job.get('effective_model', job.get('requested_model', 'gpt-oss-20b'))}"
+                f"Sentence-generation OCI call: {'made' if usage_calls > 0 or reported_calls > 0 else 'not made'} "
+                f"({max(usage_calls, reported_calls)} call(s))"
             )
             progress = job.get("progress", {})
             st.info(f"Normal fields: {progress.get('normal_completed_fields', 0)} / {progress.get('normal_total_fields', 0)}")

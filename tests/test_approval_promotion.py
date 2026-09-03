@@ -4,6 +4,7 @@ from app.audit import AuditRepository
 from app.models import PromoteBatchRequest, RuleRecord
 from app.rule_repository import RuleRepository
 from app.service import UpdateRulesService
+from app.supplier_store import SupplierRuleStore
 
 
 def _candidate(audit, candidate_id, *, field_key="InvoiceCurrency", rule_id=9, confidence="normal"):
@@ -80,3 +81,26 @@ def test_batch_validation_is_atomic(tmp_path):
 
     assert result.status == "rejected"
     assert rules_path.read_text(encoding="utf-8") == before
+
+
+def test_supplier_promotion_writes_overlay_without_changing_global_rules(tmp_path):
+    service, audit, rules_path = _service(tmp_path)
+    record_id = "supplier-candidate"
+    _candidate(audit, record_id)
+    record = audit.find_candidate(record_id)
+    record["metadata"]["supplier_key"] = "Lee Supplies"
+    # Rewrite the fixture record through the repository API so the test uses
+    # the same persisted metadata shape as a real generated candidate.
+    audit.path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    service.supplier_store = SupplierRuleStore(tmp_path / "suppliers")
+    before = rules_path.read_text(encoding="utf-8")
+
+    result = service.promote_batch(PromoteBatchRequest(
+        candidate_ids=[record_id], expected_rule_version="v1", confirm=True,
+        promotion_scope="supplier", supplier_key="Lee Supplies",
+    ))
+
+    assert result.status == "promoted"
+    assert rules_path.read_text(encoding="utf-8") == before
+    overlay = json.loads((tmp_path / "suppliers" / "lee_supplies.json").read_text(encoding="utf-8"))
+    assert overlay["InvoiceCurrency"]["FIELD_KEY"] == "InvoiceCurrency"

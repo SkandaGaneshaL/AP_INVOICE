@@ -1,1 +1,1 @@
-Extract remaining invoice fields using the global rule set and the supplied supplier overlay. Return only the strict value/Page schema.
+Pass B — conditional line-item extraction. Run only when a table is detected. Extract remaining configured fields using the global rule set and supplier overlay, preserving configured field order and row order. Return only the strict {"value": ..., "Page": ...} schema; use null for absent values and never add extra keys.

@@ -85,6 +85,26 @@ def test_unmapped_change_does_not_create_rule(tmp_path):
     assert any(x.status == "unmapped" for x in result.changes)
 
 
+def test_sentence_payload_is_field_local_and_excludes_competing_occurrences():
+    from app.sentence_payload import build_sentence_payload
+    context = RuleGenerationContext(
+        field_key="PONumber", display_label="PO Number", short_rule="use labeled PO",
+        detailed_rule=["Do not use order references."], old_value="HK 9497384", new_value="9497384",
+        invoice_payload={"PONumber": {"value": "HK 9497384"}, "InvoiceNumber": {"value": "X"}},
+        final_response={"PONumber": {"value": "9497384"}},
+        feedback_packet=RuleFeedbackPacket(
+            field_key="PONumber", field_path="PONumber",
+            evidence=[EvidenceMatch(page=1, label="Customer PO", value="HK 9497384")],
+            competing_evidence=[EvidenceMatch(page=1, label="Order No", value="PS-1")],
+        ),
+    )
+    payload = build_sentence_payload(context)
+    assert payload["field_key"] == "PONumber"
+    assert "negative_labels" not in payload
+    assert "InvoiceNumber" not in json.dumps(payload)
+    assert "PS-1" not in json.dumps(payload)
+
+
 def test_oci_chat_result_nested_response_is_extracted(monkeypatch):
     message = SimpleNamespace(content=[SimpleNamespace(text='{"sentence":"Use the labeled tax amount."}')])
     choice = SimpleNamespace(message=message, finish_reason="stop")
@@ -97,7 +117,7 @@ def test_oci_chat_result_nested_response_is_extracted(monkeypatch):
     result = OciGeminiRuleGenerator(client=Client()).generate(
         field_key="TaxAmount", display_label="Tax", short_rule="tax",
         detailed_rule=[], old_value="1", new_value="2")
-    assert result == ("Use the labeled tax amount.", "req-test", "structured_json")
+    assert result == ("Use the labeled tax amount.", "req-test", "correction_intent_json")
 
 
 def test_oci_context_generation_preserves_feedback_without_unsupported_keywords(monkeypatch):
@@ -266,7 +286,8 @@ def test_oci_rule_generation_propagates_decision_summary(monkeypatch):
     class Client:
         def chat(self, details):
             request = details.chat_request
-            assert list(request.response_format.json_schema.schema["properties"]) == ["sentence"]
+            assert "sentence" in request.response_format.json_schema.schema["properties"]
+            assert request.response_format.json_schema.schema["additionalProperties"] is False
             return response
 
     monkeypatch.setenv("OCI_COMPARTMENT_ID", "ocid1.compartment.test")
@@ -277,7 +298,7 @@ def test_oci_rule_generation_propagates_decision_summary(monkeypatch):
     assert result.decision_summary == "Selected the explicit tax label."
     assert result.reason == "Selected the explicit tax label."
     assert result.reasoning_summary_available is True
-    assert result.reasoning_mode == "safe_decision_summary"
+    assert result.reasoning_mode == "correction_intent"
 
 
 def test_oci_rule_generation_propagates_reason_and_falls_back_safely(monkeypatch):
@@ -399,25 +420,7 @@ def test_gpt_oss_reasoning_effort_is_sent_without_verbosity(monkeypatch):
     assert getattr(captured["request"], "stop", None) in (None, [])
 
 
-def test_oci_retries_provider_limit_once_without_application_budget(monkeypatch):
-    requests = []
-    responses = [
-        SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(choices=[SimpleNamespace(
-            finish_reason="MAX_TOKENS", message=SimpleNamespace(content=[SimpleNamespace(text="Here is the JSON requested: `")]))])), headers={"opc-request-id": "req-1"}),
-        SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(choices=[SimpleNamespace(
-            finish_reason="STOP", message=SimpleNamespace(content=[SimpleNamespace(text='{"sentence":"Use the labeled tax amount."}')]))])), headers={"opc-request-id": "req-2"}),
-    ]
-    class Client:
-        def chat(self, details):
-            requests.append(details.chat_request)
-            return responses.pop(0)
-    monkeypatch.setenv("OCI_COMPARTMENT_ID", "ocid1.compartment.test")
-    result = OciGeminiRuleGenerator(client=Client()).generate(field_key="TaxAmount", display_label="Tax", short_rule="tax", detailed_rule=[], old_value="1", new_value="2")
-    assert result[0] == "Use the labeled tax amount."
-    assert [request.max_tokens for request in requests] == [None, None]
-
-
-def test_oci_exhausted_truncation_exposes_safe_retry_diagnostics(monkeypatch):
+def test_oci_provider_limit_exposes_safe_diagnostics_without_retry(monkeypatch):
     requests = []
     response = SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(
         choices=[SimpleNamespace(
@@ -438,13 +441,13 @@ def test_oci_exhausted_truncation_exposes_safe_retry_diagnostics(monkeypatch):
             client=Client(), model_id="openai.gpt-oss-20b", reasoning_effort="high"
         ).generate(field_key="PONumber", display_label="PO Number", short_rule="po", detailed_rule=[], old_value="1", new_value="2")
     generation = caught.value.diagnostics["generation"]
-    assert generation["attempts"] == 2
+    assert generation["attempts"] == 1
     assert generation["application_output_limit_sent"] is False
     assert generation["provider_managed_limit"] is True
-    assert generation["finish_reasons"] == ["MAX_TOKENS"] * 2
-    assert generation["request_ids"] == ["req-truncated"] * 2
+    assert generation["finish_reasons"] == ["MAX_TOKENS"]
+    assert generation["request_ids"] == ["req-truncated"]
     assert generation["reason"] == "provider_output_truncated_after_repair"
-    assert [request.reasoning_effort for request in requests] == ["HIGH"] * 2
+    assert [request.reasoning_effort for request in requests] == ["HIGH"]
 
 
 def test_oci_does_not_retry_safety(monkeypatch):
@@ -483,34 +486,6 @@ def test_oci_does_not_retry_deterministic_400(monkeypatch):
             detailed_rule=[], old_value="1", new_value="2"
         )
     assert calls == 1
-
-
-def test_repair_payload_is_compact_and_does_not_repeat_correction_values(monkeypatch):
-    prompts = []
-    responses = [
-        SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(choices=[SimpleNamespace(
-            finish_reason="STOP", message=SimpleNamespace(content=[SimpleNamespace(
-                text='{"sentence":"If the PO is present, use 9497384."}')]))])),
-                       headers={"opc-request-id": "req-invalid"}),
-        SimpleNamespace(data=SimpleNamespace(chat_response=SimpleNamespace(choices=[SimpleNamespace(
-            finish_reason="STOP", message=SimpleNamespace(content=[SimpleNamespace(
-                text='{"sentence":"Extract the value from the explicitly labeled purchase-order field."}')]))])),
-                       headers={"opc-request-id": "req-repair"}),
-    ]
-
-    class Client:
-        def chat(self, details):
-            prompts.append(details.chat_request.messages[1].content[0].text)
-            return responses.pop(0)
-
-    monkeypatch.setenv("OCI_COMPARTMENT_ID", "ocid1.compartment.test")
-    result = OciNativeRuleGenerator(client=Client(), model_id="openai.gpt-oss-20b").generate_with_metadata(
-        field_key="PONumber", display_label="PO Number", short_rule="Extract labeled PO.",
-        detailed_rule=[], old_value="HK 9497384", new_value="9497384"
-    )
-    assert result.sentence.startswith("Extract the value")
-    assert "HK 9497384" not in prompts[1]
-    assert "9497384" not in prompts[1]
 
 
 def test_when_is_valid_rule_language_but_fallback_hops_are_rejected():

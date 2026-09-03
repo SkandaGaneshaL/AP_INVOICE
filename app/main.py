@@ -88,12 +88,14 @@ def update_rules(request: UpdateRequest):
             "application_output_limit_sent": False,
             "provider_managed_output_limit": True,
             "reasoning_effort": reasoning.get("effective_effort"),
-            "gepa_enabled": False,
-            "reason": "GEPA is detached from the active application",
+            "reason": "Normal LLM-first correction path",
+            "sentence_payload_version": "correction-delta-v1",
+            "intent_schema_version": "correction-intent-v1",
+            "merge_schema_version": "rule-merge-v1",
+            "repair_calls": 0,
         }
         job_id = update_jobs.create(
-            {"normal_completed_fields": 0, "normal_total_fields": len(changes),
-             "gepa_enabled": False},
+            {"normal_completed_fields": 0, "normal_total_fields": len(changes)},
         requested_config={"reasoning_effort": requested_reasoning}, effective_config=effective,
             requested_model=selected_model.key, effective_model=selected_model.model_id,
             extraction_model=os.getenv("OCI_EXTRACTION_MODEL_ID", "google.gemini-2.5-flash"),
@@ -103,7 +105,7 @@ def update_rules(request: UpdateRequest):
         request_snapshot = request.model_copy(deep=True)
         job_executor.submit(_run_update_job, job_id, request_snapshot, original_rules, changes)
         return UpdateJobCreateResponse(job_id=job_id, status="queued", normal_status="queued",
-                                       gepa_status="disabled", requested_config={"reasoning_effort": requested_reasoning},
+                                       requested_config={"reasoning_effort": requested_reasoning},
                                        effective_config=effective,
                                        requested_model=selected_model.key,
                                        effective_model=selected_model.model_id,
@@ -112,6 +114,7 @@ def update_rules(request: UpdateRequest):
                                        reasoning=reasoning,
                                        sentence_generation_usage=None,
                                        extraction_usage=None,
+                                       rule_merge_usage=None,
                                        reasoning_ui_contract_version=REASONING_UI_CONTRACT_VERSION)
     except KeyError as exc:
         raise HTTPException(status_code=410, detail={"code": "DOCUMENT_EXPIRED", "message": "Please upload and extract the invoice again."}) from exc
@@ -183,7 +186,11 @@ def _aggregate_normal(original_rules, results):
 def _normal_strategy_result(original_rules, results, service):
     rules, changes, candidates = _aggregate_normal(original_rules, results)
     evaluations = [candidate.evaluation for candidate, _, _ in candidates if candidate.evaluation]
-    call_count = int(getattr(service.generator, "chat_call_count", 0))
+    usage = summarize_usage([candidate.usage for candidate, _, _ in candidates])
+    # Usage is the authoritative logical-generation count. The provider's
+    # transport counter can be a stale/incomplete snapshot while concurrent
+    # field futures are still finishing.
+    call_count = usage.calls
     first_metadata = candidates[0][0].metadata if candidates else {}
     reasoning = {
         "requested_effort": first_metadata.get("reasoning_effort_requested", "low"),
@@ -192,7 +199,7 @@ def _normal_strategy_result(original_rules, results, service):
         "visible_reasoning": bool(first_metadata.get("visible_reasoning", False)),
         "hidden_reasoning_exposed": False,
         "decision_summary_available": bool(first_metadata.get("decision_summary")),
-        "reasoning_mode": first_metadata.get("reasoning_mode", "safe_decision_summary"),
+        "reasoning_mode": first_metadata.get("reasoning_mode", "not_available"),
         "reasoning_parameter_sent": bool(first_metadata.get("reasoning_parameter_sent", False)),
         "verbosity_parameter_sent": bool(first_metadata.get("verbosity_parameter_sent", False)),
         "usage_diagnostics": first_metadata.get("usage_diagnostics", {}),
@@ -212,7 +219,8 @@ def _normal_strategy_result(original_rules, results, service):
                   "oci_sentence_generation_call_count": call_count,
                   "reasoning": reasoning,
                   "decision_summary": first_metadata.get("decision_summary")},
-        usage=summarize_usage([candidate.usage for candidate, _, _ in candidates]),
+        usage=usage,
+        sentence_generation_usage=usage,
     ), candidates
 
 
@@ -298,7 +306,7 @@ def _run_update_job(job_id: str, request: UpdateRequest, original_rules, changes
         update_jobs.update_normal(job_id, normal_result.model_dump(), completed_fields=len(changes), total_fields=len(changes))
 
         update_jobs.complete_normal(job_id, normal_result.model_dump(),
-                                     termination={"reason": "gepa_disabled"},
+                                     termination={"reason": "normal_generation_completed"},
                                      usage=normal_result.usage.model_dump() if normal_result.usage else None)
     except Exception as exc:
         logger.exception("Update background job failed: %s", job_id)
@@ -334,8 +342,8 @@ def _job_response(job_id: str):
         data = update_jobs.get(job_id)
         return UpdateJobStatusResponse(
             job_id=data["job_id"], status=data["status"], phase=data.get("phase", data["status"]),
-            normal_status=data.get("normal_status", "unknown"), gepa_status=data.get("gepa_status", "unknown"),
-            normal_result=data.get("normal_result"), gepa_result=data.get("gepa_result") or data.get("strategy"),
+            normal_status=data.get("normal_status", "unknown"),
+            normal_result=data.get("normal_result"),
             progress=data.get("progress", {}), requested_config=data.get("requested_config", {}),
             effective_config=data.get("effective_config", {}), termination=data.get("termination", {}),
             usage=data.get("usage", {}),
@@ -346,6 +354,7 @@ def _job_response(job_id: str):
             reasoning_ui_contract_version=data.get("reasoning_ui_contract_version", "missing"),
             sentence_generation_usage=data.get("sentence_generation_usage"),
             extraction_usage=data.get("extraction_usage"),
+            rule_merge_usage=data.get("rule_merge_usage"),
             error=data.get("error"),
             requested_model=data.get("requested_model", "gpt-oss-20b"),
             effective_model=data.get("effective_model", "openai.gpt-oss-20b"),
@@ -393,14 +402,6 @@ def get_update_job_events(job_id: str, request: Request):
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
-    })
-
-
-@app.get("/v1/extraction-rules/gepa-jobs/{job_id}")
-def get_gepa_job(job_id: str):
-    raise HTTPException(status_code=410, detail={
-        "code": "GEPA_DISABLED",
-        "message": "GEPA is not enabled in the active application",
     })
 
 
@@ -489,7 +490,8 @@ async def extract_invoice(file: UploadFile = File(...)):
 def promote_candidate(request: PromoteRequest):
     try:
         service = UpdateRulesService(None, RuleRepository(), AuditRepository())
-        return service.promote(request.candidate_id, request.expected_rule_version, request.dry_run)
+        return service.promote(request.candidate_id, request.expected_rule_version, request.dry_run,
+                               request.promotion_scope, request.supplier_key)
     except Exception as exc:
         logger.exception("Candidate promotion failed")
         raise HTTPException(status_code=500, detail={"code": "PROMOTION_FAILED", "reason": str(exc)[:500]}) from exc

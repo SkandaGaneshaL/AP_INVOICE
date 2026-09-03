@@ -27,14 +27,16 @@ LINE_ITEM_RULES = """### LineItems rules
 class InvoiceExtractionPromptBuilder:
     """Builds the complete extraction prompt from local extraction rules."""
 
-    def build(self, rules: list[RuleRecord], *, candidate_instruction: str | None = None) -> str:
+    def build(self, rules: list[RuleRecord], *, candidate_instruction: str | None = None,
+              pass_name: str = "all") -> str:
         if not rules:
             raise ValueError("No extraction rules are configured")
 
         field_lines: list[str] = []
         rule_blocks: list[str] = []
         output: dict[str, Any] = {}
-        for rule in rules:
+        selected_rules = [rule for rule in rules if self._include_in_pass(rule, pass_name)]
+        for rule in selected_rules:
             field_lines.append(f"- {rule.FIELD_KEY} ({rule.DISPLAY_LABEL or rule.FIELD_KEY})")
             detailed = [str(item).strip() for item in rule.DETAILED_RULE if str(item).strip()]
             rule_blocks.append(
@@ -63,7 +65,7 @@ class InvoiceExtractionPromptBuilder:
             f"{chr(10).join(field_lines)}\n\n"
             "### Field extraction rules\n"
             f"{chr(10).join(rule_blocks)}\n\n"
-            f"{LINE_ITEM_RULES if any(r.FIELD_KEY == 'LineItems' for r in rules) else ''}"
+            f"{LINE_ITEM_RULES if any(r.FIELD_KEY == 'LineItems' for r in selected_rules) else ''}"
             f"{candidate}\n"
             "### Output contract\n"
             "Return exactly one top-level object with every configured field. "
@@ -73,11 +75,32 @@ class InvoiceExtractionPromptBuilder:
         )
 
     @staticmethod
+    def _include_in_pass(rule: RuleRecord, pass_name: str) -> bool:
+        if pass_name == "all":
+            return True
+        if pass_name == "identity":
+            text = " ".join((rule.FIELD_KEY, rule.DISPLAY_LABEL)).casefold()
+            return any(term in text for term in ("vendor", "invoice", "currency", "buyer", "address", "date", "type", "po number", "purchase order", "ponumber"))
+        if pass_name == "line_items":
+            return InvoiceExtractionPromptBuilder.is_list_rule(rule)
+        return True
+
+    def build_identity_prompt(self, rules: list[RuleRecord]) -> str:
+        return self.build(rules, pass_name="identity")
+
+    def build_line_item_prompt(self, rules: list[RuleRecord]) -> str:
+        return self.build(rules, pass_name="line_items")
+
+    @staticmethod
     def is_list_rule(rule: RuleRecord) -> bool:
-        text = " ".join([rule.FIELD_KEY, rule.DISPLAY_LABEL, rule.SHORT_RULE, *rule.DETAILED_RULE]).lower()
+        # Determine cardinality from the field contract, not negative prose in
+        # a scalar rule (for example TaxAmount saying “do not use line items”).
+        contract = " ".join([rule.FIELD_KEY, rule.DISPLAY_LABEL, rule.SHORT_RULE]).casefold()
         return (
-            "line item" in text
-            or "each invoice line" in text
-            or "multiple line" in text
-            or rule.FIELD_KEY.lower().startswith("lineitem")
+            rule.FIELD_KEY.casefold().startswith("lineitem")
+            or "line item description" in contract
+            or "line item amount" in contract
+            or "line item number" in contract
+            or "billed quantity" in contract
+            or "line items" in contract
         )

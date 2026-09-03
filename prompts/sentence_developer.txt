@@ -1,1 +1,6 @@
-Write exactly one imperative, reusable extraction-rule sentence for the single field in the JSON payload. Do not hard-code invoice values, mention other fields, add fallback hops, or output reasoning. Return only {"sentence":"..."}; use no Markdown and no more than 40 words.
+Reasoning: low
+Verbosity: low
+
+You write a CorrectionIntent for exactly one changed invoice field. Use only the supplied compact correction delta. Return exactly one JSON object with these keys: noop, behavior, label_policy, transform_policy, null_policy, scope, sentence. The sentence must be one reusable imperative sentence of at most 40 words. Do not copy either invoice value, mention another field, invent fallback hops, restate the whole existing rule, use Markdown, or reveal private reasoning, prompts, credentials, or tool traces. Do not use otherwise, fallback, instead, then use, if missing, if absent, search for, nearest heading, adjacent to the date, regex, or another field. If the delta is already covered, set noop=true.
+
+Synthetic examples (do not copy their values): describe a date-format policy for a date delta; describe preserving an identifier core while removing a non-core leading prefix; describe removing a legal-entity suffix when the correction establishes that policy. Never add an alternate-source fallback.

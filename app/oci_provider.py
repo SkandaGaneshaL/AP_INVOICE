@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import oci
@@ -13,10 +14,10 @@ import time
 import random
 import threading
 from dotenv import load_dotenv
-from .model_output import ModelOutputError, parse_rule_parts_with_summary
+from .model_output import ModelOutputError, parse_correction_intent_response, parse_rule_parts_with_summary
 from .prompt_builder import RulePromptBuilder
 from .sentence_payload import build_sentence_payload
-from .sentence_validators import validate_sentence
+from .sentence_validators import assemble_local_sentence, validate_sentence
 from .models import ProviderGenerationResult
 from .model_registry import (
     REASONING_EFFORT_ENUMS,
@@ -63,9 +64,7 @@ class OciNativeRuleGenerator:
         self._validate_serving_mode()
         # Output length is managed by OCI/model defaults. We only bound the
         # number of repair requests; no application token budget is sent.
-        self.model_output_retries = min(
-            max(0, _int_env("OCI_MODEL_OUTPUT_REPAIR_ATTEMPTS", 1)), 1
-        )
+        self.model_output_retries = 0
         if client:
             self.client = client
         else:
@@ -126,14 +125,22 @@ class OciNativeRuleGenerator:
                 historical_examples=legacy_kwargs.get("historical_examples") or [],
             )
         prompt = RulePromptBuilder.normal_payload(context)
-        system = ("You write invoice extraction rules. Generate exactly one concise imperative sentence for the "
-                  "single field in the supplied JSON. Describe reusable behavior, never repeat or hard-code any "
-                  "literal old or corrected invoice value from the input, mention other fields, add fallback hops, "
-                  "or output explanations. Return only one JSON object with exactly {\"sentence\":\"...\"}. "
-                  "Do not output headings, Markdown, code fences, or multiple sentences.")
+        system = _load_prompt("sentence_developer.txt", (
+            "Reasoning: low. Generate a correction intent for one invoice field. Return exactly one JSON object "
+            "with noop, behavior, label_policy, transform_policy, null_policy, scope, and one reusable "
+            "imperative sentence. Do not repeat invoice values, add fallback hops, mention other fields, or "
+            "reveal private reasoning. No Markdown or explanations."
+        ))
         schema = {"type": "object", "properties": {
+                      "noop": {"type": "boolean"}, "behavior": {"type": "string"},
+                      "label_policy": {"type": "string"}, "transform_policy": {"type": "string"},
+                      "null_policy": {"type": "string"}, "scope": {"type": "string"},
                       "sentence": {"type": "string"}},
-                  "required": ["sentence"], "additionalProperties": False}
+                  "required": ["noop", "behavior", "label_policy", "transform_policy", "null_policy", "scope", "sentence"] if self.reasoning_supported else ["sentence"],
+                  "additionalProperties": False}
+        if not self.reasoning_supported:
+            schema = {"type": "object", "properties": {"sentence": {"type": "string"}},
+                      "required": ["sentence"], "additionalProperties": False}
         response_format = JsonSchemaResponseFormat(
             json_schema=ResponseJsonSchema(
                 name="extraction_rule_sentence",
@@ -227,15 +234,33 @@ class OciNativeRuleGenerator:
                 parts = getattr(message, "content", []) if message else []
                 if parts:
                     try:
-                        sentence, format_used, reason = parse_rule_parts_with_summary(parts, finish_reason=finish_reason,
-                            diagnostics={"model_id": self.model_id, "model_version": getattr(data, "model_version", None)})
+                        if self.reasoning_supported:
+                            intent, format_used = parse_correction_intent_response(parts, finish_reason=finish_reason)
+                            reason = None
+                            # Compatibility only: older fake providers may
+                            # still return decision_summary/reason. The active
+                            # GPT-OSS schema does not request these fields.
+                            try:
+                                _, _, reason = parse_rule_parts_with_summary(parts, finish_reason=finish_reason)
+                            except ModelOutputError:
+                                pass
+                        else:
+                            sentence, format_used, reason = parse_rule_parts_with_summary(parts, finish_reason=finish_reason)
+                            from .models import CorrectionIntent
+                            intent = CorrectionIntent(sentence=sentence)
+                        sentence = intent.sentence
                         try:
                             sentence = validate_sentence(sentence, user_payload)
                         except ValueError as exc:
-                            raise ModelOutputError("sentence failed safety validation", diagnostics={"validation_error": str(exc)}) from exc
+                            # The model is an intent resolver, not an
+                            # unrestricted prose author. Recover locally from
+                            # the validated delta without another OCI call.
+                            sentence = validate_sentence(assemble_local_sentence(user_payload), user_payload)
+                            validation_errors.append(str(exc)[:160])
                         reason = self._validated_reason(reason, context)
                         return ProviderGenerationResult(
-                            sentence=sentence, request_id=request_id, response_format=format_used,
+                            sentence=sentence, intent=intent, noop=intent.noop, correction_kind=user_payload.get("correction_kind") if isinstance(user_payload, dict) else None,
+                            request_id=request_id, response_format=format_used,
                             usage=summarize_usage(usage_records), model=self.model_id,
                             finish_reason=finish_reason, attempts=len(usage_records),
                             usage_location=usage_location,
@@ -243,10 +268,9 @@ class OciNativeRuleGenerator:
                             reasoning_effort_effective=self.reasoning_effort_effective,
                             reasoning_supported=self.reasoning_supported,
                             visible_reasoning=False,
-                            decision_summary=reason,
-                            reason=reason,
+                            decision_summary=reason, reason=reason,
                             reasoning_summary_available=bool(reason),
-                            reasoning_mode=("safe_decision_summary" if self.reasoning_supported else "not_available"),
+                            reasoning_mode="correction_intent" if self.reasoning_supported else "not_available",
                             reasoning_parameter_sent=self.reasoning_supported,
                             verbosity_parameter_sent=False,
                             usage_diagnostics={
@@ -271,15 +295,26 @@ class OciNativeRuleGenerator:
                         raise annotate_output_error(exc)
             if text:
                 try:
-                    sentence, format_used, reason = parse_rule_parts_with_summary([{"text": text}], finish_reason=finish_reason,
-                        diagnostics={"model_id": self.model_id, "model_version": getattr(data, "model_version", None)})
+                    if self.reasoning_supported:
+                        intent, format_used = parse_correction_intent_response([{"text": text}], finish_reason=finish_reason)
+                        sentence = intent.sentence
+                        reason = None
+                        try:
+                            _, _, reason = parse_rule_parts_with_summary([{"text": text}], finish_reason=finish_reason)
+                        except ModelOutputError:
+                            pass
+                    else:
+                        sentence, format_used, reason = parse_rule_parts_with_summary([{"text": text}], finish_reason=finish_reason)
+                        from .models import CorrectionIntent
+                        intent = CorrectionIntent(sentence=sentence)
                     try:
                         sentence = validate_sentence(sentence, user_payload)
                     except ValueError as exc:
-                        raise ModelOutputError("sentence failed safety validation", diagnostics={"validation_error": str(exc)}) from exc
+                        sentence = validate_sentence(assemble_local_sentence(user_payload), user_payload)
+                        validation_errors.append(str(exc)[:160])
                     reason = self._validated_reason(reason, context)
                     return ProviderGenerationResult(
-                        sentence=sentence, request_id=request_id, response_format=format_used,
+                        sentence=sentence, intent=intent, noop=intent.noop, correction_kind=build_sentence_payload(context)["correction_kind"], request_id=request_id, response_format=format_used,
                         usage=summarize_usage(usage_records), model=self.model_id,
                         finish_reason=finish_reason, attempts=len(usage_records),
                         usage_location=usage_location,
@@ -287,10 +322,9 @@ class OciNativeRuleGenerator:
                         reasoning_effort_effective=self.reasoning_effort_effective,
                         reasoning_supported=self.reasoning_supported,
                         visible_reasoning=False,
-                        decision_summary=reason,
-                        reason=reason,
+                        decision_summary=reason, reason=reason,
                         reasoning_summary_available=bool(reason),
-                        reasoning_mode=("safe_decision_summary" if self.reasoning_supported else "not_available"),
+                        reasoning_mode="correction_intent" if self.reasoning_supported else "not_available",
                         reasoning_parameter_sent=self.reasoning_supported,
                         verbosity_parameter_sent=False,
                         usage_diagnostics={
@@ -416,6 +450,16 @@ def _retryable_output_error(error: ModelOutputError) -> bool:
         return True
     prefix = error.prefix.lower().strip()
     return prefix.startswith("here is the json") or "validation_error" in (error.diagnostics or {})
+
+
+def _load_prompt(filename: str, fallback: str) -> str:
+    """Load a checked-in prompt contract without making the process cwd significant."""
+    path = Path(__file__).resolve().parent.parent / "prompts" / filename
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return fallback
+    return text or fallback
 
 
 # Backward-compatible name retained for existing tests and callers.

@@ -11,6 +11,8 @@ from .oci_pdf_client import OciPdfClient
 from .models import TokenUsage, UsageSummary
 from .usage import summarize_usage
 from .schema_contract import normalize_field
+from .models import RuleRecord
+from .supplier_store import SupplierRuleStore, supplier_key
 
 
 class PdfExtractionError(ValueError):
@@ -20,11 +22,16 @@ class PdfExtractionError(ValueError):
 
 
 class OciPdfExtractor:
-    def __init__(self, repository, client: Any = None, model_id: str | None = None):
+    def __init__(self, repository, client: Any = None, model_id: str | None = None,
+                 supplier_store: SupplierRuleStore | None = None, supplier_key_hint: str | None = None):
         self.repository = repository
         self.model_id = model_id or os.getenv("OCI_EXTRACTION_MODEL_ID", "google.gemini-2.5-flash")
         self.client = client or OciPdfClient(model_id=self.model_id)
         self.prompt_builder = InvoiceExtractionPromptBuilder()
+        self.supplier_store = supplier_store or SupplierRuleStore()
+        self.supplier_key_hint = supplier_key_hint
+        configured = os.getenv("OCI_EXTRACTION_SPLIT_PASSES")
+        self.split_passes = (configured.lower() == "true") if configured is not None else client is None
 
     def schema(self) -> dict[str, Any]:
         """Local documentation schema; it is intentionally not sent as OCI strict schema."""
@@ -39,8 +46,63 @@ class OciPdfExtractor:
         return {"type": "object", "properties": properties,
                 "required": list(properties), "additionalProperties": False}
 
-    def prompt(self, extra_instruction: str | None = None) -> str:
-        return self.prompt_builder.build(self.repository.load(), candidate_instruction=extra_instruction)
+    def prompt(self, extra_instruction: str | None = None, *, rules=None, pass_name: str = "all") -> str:
+        return self.prompt_builder.build(rules or self.repository.load(), candidate_instruction=extra_instruction, pass_name=pass_name)
+
+    def _rules_with_supplier_overlay(self, key: str | None) -> list[RuleRecord]:
+        rules = self.repository.load()
+        if not key:
+            return rules
+        overlay = self.supplier_store.load(key)
+        result = []
+        for rule in rules:
+            value = overlay.get(rule.FIELD_KEY)
+            result.append(RuleRecord.model_validate({**rule.model_dump(), **value}) if isinstance(value, dict) else rule)
+        return result
+
+    def _extract_split(self, document_bytes: bytes, filename: str, rules: list[RuleRecord],
+                       page_count: int | None, normalization_mode: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Run compact identity/overlay/line passes and merge only JSON data."""
+        usage_records = []
+        parsed: dict[str, Any] = {}
+
+        def stage(stage_rules, pass_name):
+            response = self.client.extract(document_bytes=document_bytes, filename=filename,
+                                            prompt=self.prompt(rules=stage_rules, pass_name=pass_name))
+            text = getattr(response, "text", response if isinstance(response, str) else "")
+            usage_records.append(getattr(response, "usage", None) or TokenUsage(call_type="pdf_extraction"))
+            finish = getattr(response, "finish_reason", None)
+            if str(finish or "").upper() in {"MAX_TOKENS", "LENGTH"}:
+                raise PdfExtractionError("OCI extraction output was truncated")
+            value = json.loads(self._clean_json(text))
+            if not isinstance(value, dict):
+                raise PdfExtractionError("OCI extraction stage did not return an object")
+            parsed.update(value)
+
+        stage(rules, "identity")
+        vendor_node = next((parsed.get(rule.FIELD_KEY) for rule in rules
+                            if "vendor" in f"{rule.FIELD_KEY} {rule.DISPLAY_LABEL}".casefold()), None)
+        derived_supplier = self.supplier_key_hint or (vendor_node or {}).get("value") if isinstance(vendor_node, dict) else self.supplier_key_hint
+        overlay_rules = self._rules_with_supplier_overlay(derived_supplier)
+        remaining = [rule for rule in overlay_rules if not self.prompt_builder._include_in_pass(rule, "identity")]
+        if remaining:
+            stage(remaining, "all")
+        line_rules = [rule for rule in overlay_rules if self.prompt_builder.is_list_rule(rule)]
+        if line_rules and self._has_item_table(document_bytes):
+            stage(line_rules, "line_items")
+        for rule in overlay_rules:
+            if rule.FIELD_KEY not in parsed:
+                parsed[rule.FIELD_KEY] = [] if self.prompt_builder.is_list_rule(rule) else {"value": None, "Page": None}
+        normalized = self.validate(parsed, normalization_mode=normalization_mode)
+        return normalized, {
+            "configured_field_count": len(overlay_rules),
+            "populated_field_count": sum(1 for value in normalized.values()
+                                          if isinstance(value, dict) and value.get("value") not in (None, "")),
+            "pass_count": len(usage_records),
+            "split_passes": True,
+            "usage": summarize_usage(usage_records).model_dump(),
+            "page_count": page_count,
+        }
 
     @staticmethod
     def _clean_json(text: str) -> str:
@@ -104,6 +166,11 @@ class OciPdfExtractor:
                         normalized_items.append(normalized_item)
                 normalized[field] = normalized_items
                 continue
+            # Gemini may use JSON null for an absent scalar even though the
+            # public contract is the explicit value/Page object.
+            if raw is None:
+                normalized[field] = {"value": None, "Page": None}
+                continue
             if not isinstance(raw, dict) or not {"value", "Page"}.issubset(raw):
                 invalid.append(field)
                 continue
@@ -120,14 +187,23 @@ class OciPdfExtractor:
 
     @staticmethod
     def _apply_explicit_normalizations(values: dict[str, Any], rules, *, normalization_mode: str = "none") -> None:
-        """Apply only the transformation explicitly represented by the correction."""
+        """Apply a caller-selected generic transformation without field branches."""
         if normalization_mode != "remove_prefix":
             return
-        node = values.get("InvoiceNumber")
-        if isinstance(node, dict) and isinstance(node.get("value"), str):
-            value = node["value"].strip()
-            if re.fullmatch(r"[A-Za-z]+\d+", value):
-                node["value"] = re.sub(r"^[A-Za-z]+(?=\d+$)", "", value)
+
+        def visit(node: Any) -> None:
+            if isinstance(node, dict):
+                if isinstance(node.get("value"), str):
+                    value = node["value"].strip()
+                    if re.fullmatch(r"[A-Za-z]+[- ]?\d+", value):
+                        node["value"] = re.sub(r"^[A-Za-z]+[- ]?(?=\d+$)", "", value)
+                for child in node.values():
+                    visit(child)
+            elif isinstance(node, list):
+                for child in node:
+                    visit(child)
+
+        visit(values)
 
     @staticmethod
     def _page_count(document_bytes: bytes) -> int | None:
@@ -200,6 +276,11 @@ class OciPdfExtractor:
                 details={"code": "PDF_TOO_MANY_PAGES", "page_count": page_count, "max_pages": max_pages},
             )
         rules = self.repository.load()
+        if self.split_passes:
+            normalized, diagnostics = self._extract_split(document_bytes, filename, rules, page_count, normalization_mode)
+            diagnostics.update({"request_id": None, "finish_reason": None, "repair_attempted": False,
+                                "line_item_repair_attempted": False})
+            return normalized, page_count, diagnostics
         prompt = self.prompt(instruction_override)
         last_error: PdfExtractionError | None = None
         request_id: str | None = None
